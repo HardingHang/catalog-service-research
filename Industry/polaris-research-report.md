@@ -2,617 +2,844 @@
 
 ## A. 定位与设计目标
 
-### 项目起源
-- **发起方**：Snowflake（捐赠方）
-- **捐赠路径**：2024年Snowflake将Polaris项目捐赠给Apache软件基金会（ASF），目前处于Apache孵化器项目状态
-- **最新版本**：1.3.0-incubating（2026年1月发布）
+### 项目来源
+- 发起方：Snowflake。
+- 捐赠路径：Snowflake 于 2024 年将 Polaris 捐赠给 Apache Software Foundation，当前仍处于 Apache Incubator。
+- 当前版本：本地源码与已有报告都指向 1.3.0 这一代实现；第二版报告记录的发布日期为 `2026-01-16`。
 
 ### 初始痛点
-- Snowflake需要开放、互操作的Iceberg REST Catalog标准
-- 解决私有商业Catalog锁定问题，让用户能在多引擎间自由迁移
+- 为 Apache Iceberg 提供开放、标准化、可互操作的 REST Catalog。
+- 降低私有 Catalog 锁定风险，让 Spark、Flink、Trino、Doris、StarRocks、Dremio OSS 等引擎共享同一套 Iceberg 元数据。
+- 在开放互操作基础上补齐企业环境常见的权限控制、认证集成、临时存储凭证下发和审计/事件能力。
 
 ### 目标用户与典型场景
-- **目标用户**：需要在多计算引擎（Spark、Flink、Trino等）间共享Iceberg表的企业
-- **典型场景**：lakehouse架构的统一元数据管理、跨引擎数据访问、细粒度权限控制
+- 面向以 Iceberg 为核心表格式、需要多引擎共享表的企业数据平台团队。
+- 典型场景：
+  - 统一 Iceberg Catalog 服务层。
+  - 中心化管理 Catalog、Namespace、Table/View、角色和权限。
+  - 通过 credential vending 向执行引擎下发临时对象存储凭证。
+  - 通过 federation 方式接入外部 Catalog。
 
-### 设计目标
-| 做 | 不做 |
+### 设计目标与非目标
+
+| 做什么 | 不做什么 |
 |---|---|
-| 完整实现Iceberg REST API | 不支持非Iceberg格式（Delta/Hudi/Paimon） |
-| 多引擎互操作 | 不提供自己的查询引擎 |
-| 细粒度RBAC + Credential Vending | 不做数据目录/治理类功能 |
-| 开放、可审计、安全 | 不绑定特定云厂商 |
+| 实现并扩展 Iceberg REST Catalog 体系 | 不做自有查询引擎 |
+| 强调开放互操作 | 不做通用 Data Catalog / 数据发现平台 |
+| 提供中心化权限控制与凭证下发 | 不做 AI/ML 资产目录 |
+| 支持内部 Catalog 与外部/联邦 Catalog | 不追求 Delta/Hudi/Paimon 多表格式统一 |
 
 ### 差异化主张
-- **唯一来源**：ASF旗下唯一由商业公司（Snowflake）捐赠并维护的Iceberg REST Catalog
-- **与Nessie对比**：Polaris更轻量，专注表元数据；Nessie强调Git-like版本控制
-- **与Unity Catalog对比**：Polaris更聚焦Iceberg，Unity是更大一号的统一Catalog
+- Polaris 不是“大一统数据目录”，而是围绕 **Iceberg REST** 展开的开放 Catalog。
+- 相比 Nessie 更轻，不引入 Git-like branch/tag/merge 语义。
+- 相比 Unity Catalog 更窄，不把 model、volume、feature、vector 等扩成一等对象。
+- 相比“仅实现 REST 协议”的参考实现更完整，额外覆盖管理 API、RBAC、realm、federation、policy、事件等能力。
+
+### 源码补充
+- 仓库 README 直接将项目结构划分为 `polaris-core`、`api`、`runtime`、`persistence`、`extensions` 几大块，表明它从一开始就不是“单个 REST handler 项目”，而是带完整运行时、持久化、扩展和运维结构的 Catalog 服务。
+  - 参考：`D:\project\polaris\README.md:35-83`
 
 ---
 
 ## B. 核心概念与元数据模型
 
-### 顶层抽象层次
+### 顶层抽象
+
+```text
+Realm
+  └─ Catalog
+      └─ Namespace（支持嵌套）
+          ├─ Table
+          ├─ View
+          └─ Policy（可附着到 catalog/namespace/table/view）
+
+控制面对象：
+- Principal
+- Principal Role
+- Catalog Role
 ```
-Catalog
-  └── Namespace (支持嵌套层级)
-        └── Table
-        └── View (Polaris Evolution工具支持)
-```
 
-### 元数据模型特点
-- **Catalog类型**：
-  - **Internal**：Polaris管理的Catalog
-  - **External**：外部Catalog（如Snowflake、AWS Glue）仅在Polaris中注册元数据指针
-- **Storage Configuration**：创建IAM实体用于连接云存储（S3/GCS/Azure）
-- **Realm管理**：多Realm支持，逻辑隔离不同业务域
+### 源码级模型说明
 
-### 表格式支持
-- **仅支持Apache Iceberg**（v1/v2）
-- Delta、Hudi、Paimon支持在Issue #4121中被列为 enhancement需求
-- 支持**Iceberg REST Federation**和**Hive Metastore Federation**
+#### 1. 统一实体类型系统
+- Polaris 并不是为 catalog、namespace、table、role、policy 分别维护很多独立的持久化主表，而是采用统一的实体类型系统。
+- `PolarisEntityType` 定义了核心实体类型：
+  - `PRINCIPAL`
+  - `PRINCIPAL_ROLE`
+  - `CATALOG`
+  - `CATALOG_ROLE`
+  - `NAMESPACE`
+  - `TABLE_LIKE`
+  - `TASK`
+  - `FILE`
+  - `POLICY`
+- 其中：
+  - `CATALOG_ROLE` 的父级是 `CATALOG`
+  - `NAMESPACE` 的父级是 `CATALOG`，并且允许自引用嵌套
+  - `TABLE_LIKE` 的父级是 `NAMESPACE`
+  - `POLICY` 的父级也是 `NAMESPACE`
+- 这意味着 Polaris 的核心对象模型本质上是“一棵类型化实体树”。
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\entity\PolarisEntityType.java:26-79`
 
-### 可扩展性
-- 支持自定义entity/property（通过Entity级联）
-- 策略框架（Policy Framework）支持定制化授权逻辑
-- 支持OPA（Open Policy Agent）集成作为外部Policy Decision Point
+#### 2. Realm 是最外层隔离单元
+- `RealmContext` 非常轻，只暴露 `getRealmIdentifier()`，说明 realm 本身更像请求路由与隔离上下文，而不是一个重业务对象。
+- 但在持久化层它是一级关键分区键，所有核心表都带 `realm_id`，说明 realm 不只是逻辑概念，而是贯穿请求、鉴权、存储隔离的主线。
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\context\RealmContext.java:21-27`
+  - 参考：`D:\project\polaris\persistence\relational-jdbc\src\main\resources\postgres\schema-v4.sql:36-56`
+
+#### 3. Catalog 模型
+- `CatalogEntity` 负责在 REST 模型和持久化实体之间转换。
+- `CatalogEntity.fromCatalog(...)` 会把 REST 请求模型转换为内部实体，同时写入：
+  - 目录名
+  - properties
+  - `catalogType`
+  - storage config
+  - 对外部 Catalog 场景还可能写入 connection config
+- `CatalogEntity.asCatalog(...)` 则会把内部实体恢复为：
+  - `PolarisCatalog`（内部 Catalog）
+  - `ExternalCatalog`（外部/联邦 Catalog）
+- 这说明 Polaris 在 Catalog 级别已经显式区分 internal / external，而不是后期通过某个 flag 临时扩展。
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\entity\CatalogEntity.java:98-153`
+
+#### 4. Namespace 模型
+- `NamespaceEntity` 通过 `parent-namespace` 内部属性保存父命名空间编码值，并通过 `asNamespace()` 还原完整层级。
+- Builder 在创建时会自动拆出父 namespace 和最后一级 name，这说明嵌套 namespace 是 Polaris 原生模型的一部分，不是仅靠字符串路径拼接模拟。
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\entity\NamespaceEntity.java:32-68`
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\entity\NamespaceEntity.java:76-99`
+
+#### 5. Table / View 模型
+- Polaris 把表和视图统一归入 `TABLE_LIKE` 大类，再通过 subtype 区分。
+- `IcebergTableLikeEntity` 明确只接受 `ICEBERG_TABLE` 与 `ICEBERG_VIEW` 两种 subtype。
+- 它在内部属性中保存 `metadata-location`，并把 Iceberg 元数据文件中的关键字段名常量化，例如：
+  - `format-version`
+  - `current-snapshot-id`
+  - `snapshots`
+  - `statistics`
+  - `partition-statistics`
+- 这说明 Polaris 对 Table/View 的建模方式是：
+  - 控制面上仍然是统一实体；
+  - 数据面上核心抓手是 Iceberg metadata location，而不是把整套表元数据重新设计成 Polaris 自有格式。
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\entity\table\IcebergTableLikeEntity.java:38-85`
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\entity\table\IcebergTableLikeEntity.java:104-120`
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\entity\table\IcebergTableLikeEntity.java:122-210`
+
+#### 6. Principal Role 与 Catalog Role 双层角色模型
+- `PrincipalRoleEntity` 是顶层实体，`parentId` 绑定到 root，说明它是全局角色。
+- `CatalogRoleEntity` 则挂在 catalog 下，说明它是 catalog 内局部角色。
+- 这一设计把“平台级身份聚合”和“catalog 内授权边界”拆开了：
+  - Principal Role：承接 principal 到平台角色的映射。
+  - Catalog Role：承接 catalog 内具体资源权限。
+- 这也是 Polaris RBAC 的核心结构。
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\entity\PrincipalRoleEntity.java:65-89`
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\entity\CatalogRoleEntity.java:62-75`
+
+#### 7. Policy 是一等对象
+- `PolicyEntity` 不是附在资源上的松散 JSON，而是独立实体类型 `POLICY`。
+- 一个 policy 至少携带：
+  - `policy-type-code`
+  - `policy-description`
+  - `policy-version`
+  - `policy-content`
+- policy 同样挂在 namespace 下，这表示它与 namespace/table/view 共享相近的层级管理方式。
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\policy\PolicyEntity.java:34-90`
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\policy\PolicyEntity.java:92-141`
+
+#### 8. 预定义 Policy 类型
+- 当前源码里的系统预定义策略类型主要是维护类策略，而不是行列级安全策略：
+  - `system.data-compaction`
+  - `system.metadata-compaction`
+  - `system.orphan-file-removal`
+  - `system.snapshot-expiry`
+- 且这些策略都被标记为 `isInheritable=true`，说明 Polaris 的 policy 更偏向“可继承的治理/维护规则”。
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\policy\PredefinedPolicyTypes.java:27-35`
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\policy\PredefinedPolicyTypes.java:63-107`
+
+### 元数据持久化模型
+
+#### 1. `entities` 是统一主表
+- JDBC schema 中的 `entities` 表保存所有核心实体。
+- 关键字段包括：
+  - `realm_id`
+  - `catalog_id`
+  - `id`
+  - `parent_id`
+  - `name`
+  - `entity_version`
+  - `type_code`
+  - `sub_type_code`
+  - `properties`
+  - `internal_properties`
+  - `grant_records_version`
+  - `location_without_scheme`
+- 唯一约束 `(realm_id, catalog_id, parent_id, type_code, name)` 说明同一父级下同类型同名对象不能重复。
+  - 参考：`D:\project\polaris\persistence\relational-jdbc\src\main\resources\postgres\schema-v4.sql:36-63`
+
+#### 2. 授权、认证、策略、事件、幂等也有独立表
+- `grant_records`：授权关系。
+- `principal_authentication_data`：principal 的 client_id / secret hash。
+- `policy_mapping_record`：policy 与目标对象的绑定关系。
+- `events`：事件记录。
+- `idempotency_records`：REST 幂等记录。
+- 这说明 Polaris 的元数据层不仅管理“数据对象”，还管理控制面与运维面元数据。
+  - 参考：`D:\project\polaris\persistence\relational-jdbc\src\main\resources\postgres\schema-v4.sql:83-171`
+
+#### 3. `ModelEntity` 映射统一实体表
+- `ModelEntity` 对 `entities` 表字段做一一映射，再转换回 `PolarisBaseEntity`。
+- 它显式把 `properties` 和 `internal_properties` 当作 JSON 字符串处理，也保留 `grant_records_version` 和 `location_without_scheme`。
+- 这进一步确认 Polaris 的元数据模型是“统一实体表 + 类型系统 + JSON 属性扩展”的方式。
+  - 参考：`D:\project\polaris\persistence\relational-jdbc\src\main\java\org\apache\polaris\persistence\relational\jdbc\models\ModelEntity.java:33-80`
+  - 参考：`D:\project\polaris\persistence\relational-jdbc\src\main\java\org\apache\polaris\persistence\relational\jdbc\models\ModelEntity.java:86-137`
+
+### 结论
+- Polaris 的核心建模不是“丰富资产模型”，而是“围绕 Iceberg Catalog 的统一实体树”。
+- 它把扩展重点放在：
+  - RBAC
+  - Federation
+  - Credential Vending
+  - Policy / 维护规则
+  - Event / Idempotency
+- 它没有把 AI/ML 资产、搜索、血缘、质量等纳入同一元数据主模型。
 
 ---
 
 ## C. 架构与关键设计
 
 ### 分层结构
+
+结合 README 和运行时代码，可将 Polaris 概括为五层：
+
+```text
+API / Spec
+  ├─ Management API
+  ├─ Catalog API
+  └─ Iceberg REST API
+
+Service / Runtime
+  ├─ PolarisServiceImpl
+  ├─ PolarisAdminService
+  ├─ IcebergCatalogAdapter
+  └─ Auth / Event / Config components
+
+Core
+  ├─ Entity model
+  ├─ Policy model
+  ├─ Grant / credential / event abstractions
+  └─ PolarisMetaStoreManager
+
+Persistence
+  ├─ TransactionalMetaStoreManagerImpl / AtomicOperationMetaStoreManager
+  └─ relational-jdbc
+
+Extensions
+  ├─ federation-hadoop
+  └─ federation-hive
 ```
-┌─────────────────────────────────────────┐
-│  API Layer (REST API - OpenAPI Spec)   │
-├─────────────────────────────────────────┤
-│  polaris-core (实体定义 + 核心业务逻辑) │
-├─────────────────────────────────────────┤
-│  Runtime Modules                        │
-│    ├── Admin Tool                       │
-│    ├── Quarkus Server                   │
-│    └── Service Packages                 │
-├─────────────────────────────────────────┤
-│  Persistence Modules (JDBC/MongoDB)    │
-└─────────────────────────────────────────┘
+
+### 架构图
+
+#### 1. 总体架构图
+
+```mermaid
+flowchart LR
+    A["计算引擎 / 客户端
+Spark / Flink / Trino / Doris / StarRocks / Dremio"] --> B["API 层
+Iceberg REST API
+Management API
+Catalog API"]
+    B --> C["Service 层
+IcebergCatalogAdapter
+PolarisServiceImpl
+PolarisAdminService"]
+    C --> D["Core 层
+Entity / Grant / Policy / Credential / Event
+PolarisMetaStoreManager"]
+    D --> E["Persistence 层
+TransactionalMetaStoreManagerImpl
+relational-jdbc"]
+    D --> F["扩展层
+OIDC / OPA / Federation / Event Listener"]
+    E --> G["RDBMS
+entities / grant_records / policy_mapping_record
+principal_authentication_data / events / idempotency_records"]
+    C --> H["对象存储
+S3 / GCS / Azure Blob / S3-compatible"]
+    F --> I["外部 Catalog / 身份 / 策略系统
+Iceberg REST Federation / Hive / OIDC / OPA"]
 ```
 
-### 存储层
-| 组件 | 技术选型 |
-|---|---|
-| 元数据持久化 | JDBC (PostgreSQL/MySQL等) + MongoDB |
-| 表数据存储 | S3/Ozone/MinIO/GCS/Azure/RustFS |
+#### 2. 控制面与数据面职责划分图
 
-### 一致性模型
-- **单表原子提交**：依赖Iceberg的乐观锁/ACID语义
-- **跨表/跨Catalog事务**：**不支持**（差异点之一）
-- 冲突解决：依赖Iceberg REST API的幂等性设计
+```mermaid
+flowchart TB
+    subgraph ControlPlane["控制面：Polaris 负责的部分"]
+        CP1["Catalog / Namespace / Table/View 注册"]
+        CP2["Principal / Principal Role / Catalog Role"]
+        CP3["Grant / Policy / Event / Idempotency"]
+        CP4["Credential Vending"]
+        CP5["Federation / Auth / Policy 集成"]
+    end
 
-### 扩展机制（可插拔）
-- **Catalog Provider**：支持Internal/External/Snowflake/AWS Glue类型
-- **Authenticator**：支持OAuth2、Kerberos、外置IdP（Keycloak）
-- **Policy Engine**：支持内置RBAC + 外部OPA集成
-- **Event Hook**：Issue #4227显示正在增加namespace CRUD事件持久化
+    subgraph DataPlane["数据面：更多依赖 Iceberg 与执行引擎"]
+        DP1["表元数据文件
+metadata.json / manifest / snapshot"]
+        DP2["数据文件读写"]
+        DP3["Compaction / Snapshot Expire / Orphan File Removal 执行"]
+        DP4["Schema / Snapshot / Time Travel 语义"]
+    end
+
+    CP1 --> DP1
+    CP4 --> DP2
+    CP5 --> DP2
+    DP3 --> DP1
+```
+
+#### 3. 请求路径示意图
+
+```mermaid
+sequenceDiagram
+    participant Engine as Engine / Client
+    participant API as IcebergCatalogAdapter
+    participant Svc as PolarisAdminService / Handler
+    participant Core as PolarisMetaStoreManager
+    participant DB as JDBC Metastore
+    participant OS as Object Storage
+
+    Engine->>API: REST 请求（create/load/commit）
+    API->>Svc: 参数转换、prefix 解析、鉴权上下文
+    Svc->>Core: 控制面操作
+    Core->>DB: 读写 entities / grants / policy / idempotency
+    Svc-->>API: Catalog 结果 / credentials endpoint
+    API-->>Engine: Iceberg REST 响应
+    Engine->>OS: 直接访问对象存储
+```
+
+### 源码级架构说明
+
+#### 1. API 层是三套接口，而不是单一 REST 面
+- README 明确区分：
+  - Polaris Management API
+  - Iceberg REST API
+  - Polaris Catalog API
+- 这说明 Polaris 对外并不是只暴露 Iceberg REST，还保留了管理面与扩展管理接口。
+  - 参考：`D:\project\polaris\README.md:43-56`
+
+#### 2. `IcebergCatalogAdapter` 是协议适配层
+- `IcebergCatalogAdapter` 实现 `IcebergRestCatalogApiService` 与 `IcebergRestConfigurationApiService`。
+- 它的核心职责不是自己处理元数据，而是：
+  - 把 `prefix` 解析成 catalog name
+  - 校验 request
+  - 创建 `IcebergCatalogHandler`
+  - 委托具体操作
+- `withCatalog(...)` / `withCatalogByName(...)` 显示它是一个典型 adapter/facade。
+  - 参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\catalog\iceberg\IcebergCatalogAdapter.java:72-125`
+
+#### 3. `PolarisAdminService` 是管理面业务编排层
+- `PolarisServiceImpl` 更像 OpenAPI 生成接口后的 REST service 实现。
+- 真正的管理面业务逻辑在 `PolarisAdminService` 中，例如：
+  - `createCatalog(...)`
+  - `createPrincipalRole(...)`
+  - `createCatalogRole(...)`
+  - `listGrantsForCatalogRole(...)`
+- 例如 `createCatalog(...)` 中除了落库，还处理：
+  - catalog location overlap 校验
+  - reserved properties 清理
+  - external catalog federation 的 secret 引用提取
+  - service identity 分配
+- 这说明 Polaris 在管理面采用“API 层薄、业务服务层厚”的设计。
+  - 参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\admin\PolarisServiceImpl.java:127-134`
+  - 参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\admin\PolarisAdminService.java:700-794`
+  - 参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\admin\PolarisAdminService.java:1217-1350`
+
+#### 4. `PolarisMetaStoreManager` 是控制面能力汇聚接口
+- `PolarisMetaStoreManager` 并不只是 CRUD 接口，而是同时继承：
+  - `PolarisSecretsManager`
+  - `PolarisGrantManager`
+  - `PolarisCredentialVendor`
+  - `PolarisPolicyMappingManager`
+  - `PolarisEventManager`
+  - `PolarisMetricsManager`
+- 这很关键，说明在架构上 Polaris 把授权、凭证、策略、事件、指标都视为 metastore manager 的一部分，而不是外围插件。
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\persistence\PolarisMetaStoreManager.java:63-69`
+
+
+#### 5. 持久化事务由 `TransactionalMetaStoreManagerImpl` 统一封装
+- `TransactionalMetaStoreManagerImpl` 是控制面事务逻辑的主实现。
+- 它负责：
+  - 持久化新实体
+  - 更新实体
+  - 删除实体
+  - 同步清理 grants / policies / principal secrets
+- `dropEntity(...)` 里可以看到一个很典型的控制面事务流程：
+  - 加载并删除所有 grant records
+  - 回写关联对象的 `grant_records_version`
+  - 清理 policy mapping
+  - 删除实体
+  - 如果是 principal，再删除 secrets
+- 这说明 Polaris 并不是“删一条 entities 记录”那么简单，而是把控制面一致性维护集中在 metastore transaction 内完成。
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\persistence\transactional\TransactionalMetaStoreManagerImpl.java:117-157`
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\persistence\transactional\TransactionalMetaStoreManagerImpl.java:174-256`
+
+
+#### 6. Policy 挂载有独立映射层，而不是塞进资源属性
+- `loadPoliciesOnEntity(...)` / `loadPoliciesOnEntityByType(...)` 会先查目标实体，再查 policy mapping 记录，再回装 policy 实体。
+- `persistNewPolicyMappingRecord(...)` 单独创建 `PolarisPolicyMappingRecord`。
+- 这意味着 policy 与 target 的关系是标准多对多映射，不是把 policy content 直接嵌入 table 或 namespace properties。
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\persistence\transactional\TransactionalMetaStoreManagerImpl.java:2476-2526`
+  - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\persistence\transactional\TransactionalMetaStoreManagerImpl.java:2539-2569`
+
+
+#### 7. 认证设计是“统一认证器 + realm 配置”
+- `AuthenticationConfiguration` 按 `polaris.authentication.realm` 做 realm 级配置，并支持 default realm fallback。
+- `DefaultAuthenticator` 同时适用于 internal / external 认证场景。
+- 它的认证逻辑是：
+  - 先解析 principal
+  - 再从 credentials 中提取请求激活的 principal role
+  - 再到 metastore 里加载 principal 的 grants，得到最终 active roles
+- 这说明 Polaris 把“认证”和“激活哪些角色”明确分开处理。
+  - 参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\auth\AuthenticationConfiguration.java:29-48`
+  - 参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\auth\DefaultAuthenticator.java:44-56`
+  - 参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\auth\DefaultAuthenticator.java:91-196`
+
+
+#### 8. Credential Vending 直接体现在 Iceberg REST 流程里
+- `AccessDelegationMode` 用于表达 Iceberg REST 协议中的 access delegation mode。
+- `IcebergCatalogAdapter.createTable(...)` 和 `loadTable(...)` 会解析 delegation mode。
+- 当 mode 包含 `VENDED_CREDENTIALS` 时，会生成 refresh credentials endpoint。
+- `loadCredentials(...)` 则单独暴露凭证刷新入口。
+- 这说明 credential vending 不是旁路扩展，而是被直接嵌入 Iceberg REST 资源模型。
+  - 参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\catalog\AccessDelegationMode.java:36-83`
+  - 参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\catalog\iceberg\IcebergCatalogAdapter.java:257-360`
+  - 参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\catalog\iceberg\IcebergCatalogAdapter.java:515-529`
+
+
+#### 9. 事件是显式设计点
+- `PolarisCatalogsEventServiceDelegator` 在 create/delete/get/update catalog 与 catalog role 等管理操作前后显式派发事件。
+- 再结合 JDBC schema 中的 `events` 表，可以看出 Polaris 不是只有日志，而是有结构化事件通道。
+  - 参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\admin\PolarisCatalogsEventServiceDelegator.java:70-173`
+  - 参考：`D:\project\polaris\persistence\relational-jdbc\src\main\resources\postgres\schema-v4.sql:131-143`
+
+
+### 一致性与事务模型
+
+#### 1. 控制面元数据事务
+- 对 Polaris 自己管理的实体、授权、policy mapping、principal secret、events/idempotency 等，事务边界主要落在 metastore persistence 层。
+- `entity_version` 用于对象版本控制。
+- `grant_records_version` 用于授权关系变化后的失效与并发控制。
+
+#### 2. 表级提交依赖 Iceberg
+- `IcebergCatalogAdapter.commitTransaction(...)` 只是做 request 清洗和校验，然后委托 `catalog.commitTransaction(revisedRequest)`。
+- 这说明多表提交能力来自 Iceberg REST / 底层表格式语义，而不是 Polaris 自己再实现一层分布式事务管理器。
+  - 参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\catalog\iceberg\IcebergCatalogAdapter.java:624-654`
+
+#### 3. 没有独立的跨 Catalog 分布式事务系统
+- 从代码结构看不到类似 Saga/2PC/全局事务协调器的独立模块。
+- 因而更稳妥的结论是：
+  - Polaris 擅长 Catalog 控制面事务；
+  - 不主打跨 Catalog 的分布式事务。
+
+
+### 持久化选型
+- 生产主路径是 `relational-jdbc`。
+- `JdbcMetaStoreManagerFactory` 会为每个 realm 初始化：
+  - schema version
+  - `JdbcBasePersistenceImpl`
+  - `PolarisMetaStoreManager`
+- bootstrap 阶段会执行 SQL 脚本创建 schema，并为 realm 创建 root principal。
+  - 参考：`D:\project\polaris\persistence\relational-jdbc\src\main\java\org\apache\polaris\persistence\relational\jdbc\JdbcMetaStoreManagerFactory.java:96-122`
+  - 参考：`D:\project\polaris\persistence\relational-jdbc\src\main\java\org\apache\polaris\persistence\relational\jdbc\JdbcMetaStoreManagerFactory.java:149-191`
+
+#### 为什么是关系型数据库
+- 从源码和 schema 看，Polaris 控制面元数据具有明显关系型特征：
+  - 层级实体树
+  - 多对多授权关系
+  - 多对多 policy mapping
+  - 幂等状态机
+  - 事件与报表记录
+- 因而关系型数据库的优势在这里很明显：
+  - 事务边界清晰
+  - 一致性更强
+  - schema 演进可管理
+  - 查询与索引模型成熟
 
 ### 部署形态
-- **单体模式**：默认，适合小规模部署
-- **Kubernetes**：Helm Chart部署，支持生产级配置
-- **多租户**：通过Realm实现逻辑隔离
-- **Serverless**：不支持（差异化于云原生方案）
+- 运行时基于 Quarkus。
+- 提供 Docker、Helm、Kubernetes 部署路径。
+- 逻辑多租户主要通过 realm 实现。
+- 目前更像单服务进程 + 可扩展模块，而不是复杂微服务矩阵。
 
-### 缓存策略
-- 元数据读取：依赖Iceberg REST API标准
-- 存储凭证：短期临时凭证（Credential Vending）
-
-### 存储优化调度架构
-- **设计定位**：Polaris 采用"**引擎侧自主**"策略，Catalog 层不统一编排存储优化
-- **Compaction/Clustering**：完全由引擎侧（如 Spark、Flink）自行决定触发时机
-  - Spark：通过 `OPTIMIZE` 命令触发 data rewriting
-  - Flink：通过 Flink Table Store 的 compaction 机制
-- **统计信息收集**：
-  - Polaris 元数据中存储文件级统计（manifest 中的 Min-Max）
-  - 但**不主动扫描或收集**列级 NDV、Bloom Filter 等高级统计
-  - 统计信息由写入引擎在 commit 时写入 Iceberg metadata
-- **数据布局优化**（Z-Ordering/Liquid Clustering）：由引擎侧执行，Catalog 仅存储元数据指针
-- **结论**：Polaris 在存储优化上保持轻量，遵循"Catalog 只管元数据，不管数据文件"原则
+### 关键设计判断
+1. Polaris 的架构重点不是“算”，而是“控”。
+2. 它把控制面的复杂度集中到 metastore manager，而不是分散在各个 API handler。
+3. 它用统一实体树简化模型，用外部表格式语义承接数据面事务。
+4. 它对存储优化采取“建模治理、而非亲自执行”的策略。
 
 ---
 
 ## D. 协议与接口
 
 ### 对外协议
-| 协议 | 兼容程度 |
-|---|---|
-| **Iceberg REST Catalog Spec** | ✅ 完整实现 |
-| **HMS Thrift** | ❌ 不支持 |
-| **自定义REST** | ✅ 基于OpenAPI规范 |
-| **gRPC** | ❌ 不支持 |
-| **JDBC** | ❌ 不支持 |
 
-### SDK覆盖
-| SDK | 状态 |
+| 协议/接口 | 结论 |
 |---|---|
-| Java | ✅ 原生支持 |
-| Python (PyIceberg) | ✅ 兼容（Issue #4206显示有bug） |
-| Go | ⚠️ 社区支持 |
-| Rust | ⚠️ 社区支持 |
+| Iceberg REST Catalog Spec | 核心兼容目标，也是 Polaris 的中心能力 |
+| Polaris Management API | 官方公开 OpenAPI |
+| Polaris Catalog API | 官方公开 OpenAPI |
+| HMS Thrift | 不以 HMS Thrift 服务形态对外兼容 |
+| gRPC | 未见官方支持 |
+| JDBC | 不是对外 Catalog 协议，而是内部持久化实现 |
+
+### Federation
+- 支持外部 Iceberg REST Catalog federation。
+- 仓库中也存在 Hive federation 扩展模块。
+- 这说明 Polaris 的“外部接入”是其正式设计方向之一，而不是样例级功能。
+
+### SDK / 客户端生态
+- Polaris 的主互操作单元不是自家多语言 SDK，而是 Iceberg REST 兼容客户端。
+- README 中明确点名的引擎包括 Doris、Flink、Spark、Dremio OSS、StarRocks、Trino。
 
 ### 认证协议
-- **OAuth2**：支持
-- **OAuth2 with JWT**：支持
-- **Kerberos**：不支持
-- **PAT (Personal Access Token)**：支持
-- **SigV4**：用于S3等对象存储访问
+- 控制面：internal / external OIDC / mixed。
+- 联邦远端认证：OAuth2 client credentials、bearer token、AWS SigV4。
+- 数据面：credential vending 下发临时对象存储凭证。
 
-### Credential Vending
-- ✅ Polaris核心特性
-- 创建Storage Configuration时自动创建IAM角色
-- 查询时下发临时凭证，无需直接暴露云存储密钥
+### 源码补充
+- 默认 `CatalogPrefixParser` 直接把 prefix 映射为 catalogName，说明当前默认实现里 Iceberg REST `prefix` 与 Polaris catalog 名是一一对应的。
+  - 参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\catalog\DefaultCatalogPrefixParser.java:23-33`
 
 ---
 
 ## E. 功能矩阵
 
-| 能力域 | 考察点 | Polaris支持情况 |
+| 能力域 | Polaris 结论 | 说明 |
 |---|---|---|
-| **表格式支持** | Iceberg v1/v2 | ✅ 完整 |
-| | Delta/Hudi/Paimon | ❌ 不支持（#4121 enhancement） |
-| **Schema演化** | 列增删/重命名/类型提升 | ✅ REST API支持 |
-| | Hidden Partitioning | ✅ |
-| | Liquid Clustering | ⚠️ 取决于引擎 |
-| **版本管理** | Time Travel | ✅ Iceberg原生支持 |
-| | Snapshot隔离 | ✅ |
-| | Branch/Tag | ❌ 不支持（vs Nessie） |
-| | WAP模式 | ⚠️ 引擎侧实现 |
-| **存储优化** | Clustering/Compaction | ❌ Catalog不统一编排，由引擎侧自主触发 |
-| | 数据布局优化（Z-Ordering/Liquid） | ❌ 引擎侧执行 |
-| | 统计信息收集 | ⚠️ 文件级manifest存储，不主动扫描列级NDV/Bloom |
-| | Puffin文件 | ❌ 不支持 |
-| **查询加速** | File Skipping | ✅ Iceberg内置 |
-| | Metadata Index | ❌ 不支持 |
-| | 结果缓存 | ❌ 不支持 |
-| **权限治理** | RBAC | ✅ 内置 |
-| | ABAC | ⚠️ 需OPA集成 |
-| | 列级/行级权限 | ⚠️ 基础RBAC支持 |
-| | Dynamic Masking | ❌ 不支持 |
-| **Policy引擎** | 内置 | ✅ 基础RBAC |
-| | 外部OPA | ✅ 集成支持 |
-| **血缘** | 表级/列级 | ❌ 不支持（数据目录功能） |
-| **审计** | 操作日志 | ✅ 基础 |
-| **搜索发现** | 关键词/语义 | ❌ 不支持（数据目录功能） |
-| **数据质量** | 规则/校验 | ❌ 不支持 |
-| **视图** | View支持 | ✅ |
-| **跨表事务** | 跨Catalog事务 | ❌ 不支持 |
-| **AI/ML集成** | Feature Store | ❌ 不支持（数据目录功能） |
-| | Model Registry | ❌ 不支持（数据目录功能） |
-| | Vector Search | ❌ 不支持 |
-| | MLflow集成 | ❌ 不支持 |
-| | LangChain/Kubeflow | ❌ 不支持 |
-| | 与 Iceberg REST 的 AI Extension | ⚠️ 社区讨论中 |
-| **数据共享** | Delta Sharing | ❌ 不支持 |
-| | Iceberg REST跨组织 | ✅ |
-
-**评分**：Polaris在Iceberg REST Catalog功能上相对完整，但在AI/ML资产治理、跨表事务、高级权限控制方面存在明显空白。
+| 表格式支持 | 强支持 Iceberg | 产品定位即 Iceberg Catalog |
+| Delta/Hudi/Paimon | 不支持 | 当前不在主产品边界 |
+| Namespace / Table / View | 支持 | View 也是一等对象 |
+| 嵌套 Namespace | 支持 | 源码中有父 namespace 编码 |
+| Schema 演化 | 依赖 Iceberg / 客户端 | Polaris 主要承接 Catalog 层 |
+| 版本管理 | 依赖 Iceberg | Time Travel / Snapshot 由 Iceberg 提供 |
+| Branch / Tag / Merge | 不支持 | 与 Nessie 路线不同 |
+| 存储优化与调度 | 建模层面支持 | Compaction / Expiry / Orphan Removal 以 Policy 建模，但不直接执行 |
+| 查询加速 | 依赖 Iceberg / 客户端 | 数据跳读、Metadata Index 由引擎负责 |
+| 跨表事务 | 不主打 | 更依赖 Iceberg 自身语义 |
+| 视图与物化视图 | View 支持，MV 不支持 | View 是一等对象，MV 刷新调度不在范围内 |
+| RBAC | 支持 | Principal Role + Catalog Role 双层结构 |
+| 外部 PDP / OPA | 支持 | 已有明确集成路径 |
+| 行列级安全 | 未见原生能力 | 不属于其当前治理深度 |
+| Policy Framework | 支持 | 重点新增能力，含预定义维护策略 |
+| 审计 / 事件 | 基础支持 | 事件通道 + 事件表 |
+| 搜索与发现 | 不支持 | 不属于其产品定位 |
+| 数据质量 | 不支持 | 无内置数据校验规则 |
+| 血缘 | 不支持 | 无列级/表级血缘采集能力 |
+| AI/ML 资产治理 | 不支持 | 无 model / feature / vector 原生对象 |
+| Credential Vending | 支持 | 直接嵌入 Iceberg REST 流程，AccessDelegationMode 支持 VENDED_CREDENTIALS |
+| 数据共享 | 依赖 Iceberg REST | 通过 federation 实现跨组织共享 |
+- `listGrantsForCatalogRole(...)` 可把授权对象区分为 catalog、namespace、table、view、policy，说明这几类对象都已纳入统一授权域。
+  - 参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\admin\PolarisAdminService.java:1975-2065`
 
 ---
 
 ## F. 非功能特性
 
 ### 性能
-- **元数据QPS**：无公开基准数据
-- **超大规模场景**：无生产规模案例（风险点）
-- **REST Catalog高并发**：Issue #4206显示在purging tables时有并发异常
+- 未见公开系统级 benchmark 数据。
+- 从 schema 与实现分析，已明确考虑的优化点：
+  - 统一实体表索引（`entities` 主表）
+  - grant / policy mapping 索引
+  - idempotency 记录索引
+  - metrics report 持久化
+- **潜在退化场景**：REST Catalog 高并发场景下清单加载延迟、超大 Snapshot 数下的 manifest 扫描，暂无公开最佳实践。
 
 ### 可用性
-- **HA方案**：未公开
-- **Failover RTO/RPO**：未公开
+- 具备 Docker、Helm、K8s 部署路径。
+- 公开文档与源码层面**没有**看到完整 HA / DR 蓝图（RTO / RPO 指标未公开）。
+- 单点部署是当前默认形态，多实例 HA 依赖外部负载均衡，而非内置主备切换。
 
 ### 可扩展性
-- **水平扩展**：未提供分布式部署模式
-- **状态管理**：Realm级别隔离
+- 水平扩展：通过多 realm 分区实现逻辑隔离，非状态分片。
+- 状态管理：元数据存储于 JDBC，session / token 状态由 realm 管理。
+- 整体形态仍是”单服务 + 模块扩展”，而非强微服务化。
 
 ### 可观测性
-- ✅ **Prometheus + Jaeger** 开箱即用
-- 指标：基础JVM/HTTP指标
-- Tracing：OpenTelemetry集成
+- 有 telemetry 与 metrics 基础（`PolarisMetricsManager`）。
+- 事件表与 metrics report 表说明它在结构化可观测数据上有正式设计。
+- 日志与 tracing 的开箱程度需进一步验证 Operator Guide。
 
 ### 安全
-| 特性 | 支持 |
-|---|---|
-| 传输加密 (TLS) | ✅ |
-| 静态加密 | 取决于后端 |
-| 密钥管理 | 外部IAM |
-| 审计日志 | ✅ 基础 |
-| SOC2/GDPR | 未声明 |
+- principal 认证数据独立存于 `principal_authentication_data` 表。
+- 支持 OIDC、内部 token、临时凭证下发（Credential Vending）。
+- 支持 OPA 集成做外部 PDP。
+- 传输加密：依赖外部 TLS。
+- 密钥管理：credential vending 通过对象存储 STS / 临时凭证实现。
+- **审计合规**：SOC2 / GDPR 等认证状态未在公开资料中确认。
 
 ### 多租户隔离
-- **逻辑隔离**：✅ Realm级别
-- **物理隔离**：❌ 单体架构
-- **Quota控制**：未公开
+- realm 是主隔离单元（逻辑隔离）。
+- JDBC schema 全表带 `realm_id`，体现”共享服务、按 realm 分区”模式。
+- 不提供物理隔离（无 namespace / schema 级物理分区）。
+- Quota 机制未在当前版本中看到显式实现。
 
 ---
 
 ## G. 生态与集成
 
 ### 计算引擎
-| 引擎 | 兼容性 |
-|---|---|
-| Apache Spark | ✅ 官方支持 |
-| Apache Flink | ✅ |
-| Trino | ✅ |
-| StarRocks | ✅ |
-| Apache Doris | ✅ |
-| Dremio OSS | ✅ |
-| Presto | ⚠️ 需验证 |
-| Snowflake | ⚠️ External Catalog模式 |
-| DuckDB | ⚠️ 需REST客户端 |
-| ClickHouse | ⚠️ 需验证 |
-| Hive | ✅ HMS Federation |
+- Polaris 的计算生态定位比较清晰，本质上是通过 Iceberg REST Catalog 对接外部计算引擎，而不是自带执行能力。
+- README 明确点名的对接对象包括 Apache Doris、Apache Flink、Apache Spark、Dremio OSS、StarRocks、Trino，这说明它优先覆盖的是主流 Lakehouse 查询与计算引擎。
+- 这类集成方式的优点是引擎接入面较广、协议边界清楚；代价是 Polaris 自身不负责上层作业编排、SQL 开发体验或统一计算治理。
 
-### AI/ML框架
-| 框架 | 集成 |
-|---|---|
-| MLflow | ❌ |
-| Kubeflow | ❌ |
-| Ray | ❌ |
-| LangChain | ❌ |
-| Hugging Face | ❌ |
+### 存储后端
+- Polaris 面向的是对象存储上的 Iceberg 表元数据管理，存储后端并不是内嵌专有能力，而是依赖外部对象存储体系。
+- 官方主路径覆盖 AWS / Azure / GCP，同时兼容多种对象存储部署方式，包括 S3-compatible、MinIO、Ceph、RustFS、Ozone。
+- 这意味着它在“云对象存储 + 开放表格式”场景下适配性较强，但前提仍是对象存储、凭证体系和访问路径需要与 Iceberg REST 的工作方式对齐。
 
 ### 云厂商
-| 云 | 状态 |
-|---|---|
-| AWS | ✅ S3 + IAM |
-| Azure | ✅ ADLS Gen2 |
-| GCP | ✅ GCS |
-| 阿里云 | ❌ |
-| 腾讯云 | ❌ |
-| 华为云 | ❌ |
+- 从 README、部署说明与 credential vending 相关实现看，Polaris 的一等公民云集成仍然集中在 AWS、Azure、GCP，重点围绕对象存储访问、身份凭证下发和外部 catalog 接入展开。
+- 其中 AWS 路径最完整，既包括 S3 / Glue / IAM / STS 相关能力，也包括围绕 Iceberg REST Catalog 的 access delegation 与 credential vending 设计。
+- Azure 与 GCP 也有明确入口，但整体成熟度、示例数量和生态强调程度仍主要落在三大主流公有云上。
+- 对阿里云、腾讯云、华为云等国内云厂商，更合理的判断是“可以通过 S3-compatible 或通用对象存储接口兼容接入”，而不是“已经被官方按一等场景深度建设”。
+- 因而在自研选型时，如果首期目标环境主要是国内云，必须单独评估 STS 或临时凭证机制、RAM/AKSK 体系、对象存储签名方式、元数据联邦能力以及凭证下发链路的适配成本。
 
-### 存储
-- AWS S3 ✅
-- Apache Ozone ✅
-- MinIO ✅
-- Google Cloud Storage ✅
-- Azure Blob Storage ✅
-- Ceph ✅
-- RustFS ✅
+### Federation / 外部 Catalog
+- `external catalog + federation` 是 Polaris 的真实能力边界，而不是停留在概念层的路线图能力。
+- 从 `createCatalog(...)` 的实现可以看到，外部 catalog 接入已经包含 connection config、secret reference、service identity 分配等控制面逻辑。
+- 参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\admin\PolarisAdminService.java:722-774`
+- 这说明 Polaris 试图把自己定位成“统一入口型 catalog 控制面”，既可以托管本地 catalog，也可以把外部 catalog 纳入统一治理边界。
 
-### BI工具
-| 工具 | 集成 |
-|---|---|
-| Apache Superset | ⚠️ 通过 Trino/StarRocks 间接支持 |
-| Tableau | ⚠️ 通过 JDBC/REST 间接支持 |
-| Power BI | ⚠️ 通过 SQL 引擎间接支持 |
-| Grafana | ⚠️ 监控面板 |
-
-### 编排工具
-| 工具 | 集成 |
-|---|---|
-| Airflow | ⚠️ 社区 |
-| Dagster | ⚠️ 社区 |
-
-### 迁移路径
-- **HMS兼容**：✅ HMS Federation扩展
-- **AWS Glue**：✅ External Catalog支持
+### AI/ML 与 BI
+- Polaris 并不直接面向 BI 平台、AI 平台或数据资产门户提供完整产品化接口，它更接近底层 catalog 控制面。
+- 更合理的消费方式仍然是“引擎通过 Iceberg REST 接 Polaris”，再由上层产品或平台承接开发、分析、建模和运营体验。
+- 对选型来说，这意味着 Polaris 适合作为 Lakehouse 元数据与访问控制底座，但并不能替代完整的数据开发平台、BI 门户或 AI 数据管理产品。
 
 ---
 
 ## H. 运维与落地成本
 
 ### 部署依赖
-| 组件 | 要求 |
-|---|---|
-| Java | 21+ |
-| Docker | 27+ |
-| 数据库 | PostgreSQL 13+ / MySQL 8+ / MongoDB |
-| 对象存储 | S3/Ozone/MinIO等 |
-| Kubernetes | 可选（Helm） |
+- Java 21+
+- Docker 27+
+- JDBC 数据库
+- 对象存储
+- Kubernetes / Helm 可选
 
-### 资源消耗
-- **JVM堆内存**：可配置
-- **磁盘**：元数据存储（较小）
-- **无公开基线数据**
+### 运维复杂度判断
+- 优点：
+  - 服务形态相对集中。
+  - 基于 Quarkus，部署链路清晰。
+  - 文档、Helm、Docker 路径相对完整。
+- 不足：
+  - federation、OIDC、credential vending 会显著提升集成复杂度。
+  - 高可用与大规模生产最佳实践公开信息有限。
 
-### 升级策略
-- **滚动升级**：未声明
-- **元数据Schema迁移**：无重大变更记录
-
-### 文档完备度
-| 类型 | 状态 |
-|---|---|
-| Getting Started | ✅ 完整 |
-| Operator Guide | ✅ |
-| API Reference | ✅ OpenAPI |
-| Troubleshooting | ⚠️ 有限 |
-
-### 故障排查
-- 基础日志 + Prometheus指标
-- Jaeger分布式追踪
+### 升级与 schema 演进
+- JDBC schema 采用版本化脚本，如 `schema-v1.sql` 到 `schema-v4.sql`。
+- 这说明持久化演进是被正式管理的，不是随代码隐式变更。
 
 ---
 
 ## I. 社区与治理
 
-### 基金会归属
-- **Apache Software Foundation - Incubator项目**
-- 治理模型：ASF标准PMC + Committer
+### 治理状态
+- Apache Incubator 项目。
+- 已不是 Snowflake 的单一私有项目，但 Snowflake 仍然是最重要的初始推动方。
 
-### 背后商业公司
-- **Snowflake**（捐赠方）
-- 商业利益：推动开放标准，减少用户锁定
+### 社区成熟度判断
+- 版本迭代较快，说明项目处于高速演进期。
+- 但与 HMS 这类老牌基础组件相比，成熟度仍偏新。
 
-### 社区活跃度
-| 指标 | 数据 |
-|---|---|
-| GitHub Stars | 1.9k+ |
-| Forks | 422+ |
-| Watchers | 89+ |
-| Contributors | 50+（累计） |
-| 最新版本 | 1.3.0-incubating (2026-01) |
-| 月均 commits | ⚠️ 需从 GitHub 分析 |
-
-### 发布节奏
-- 版本号：0.x → 1.x演进中
-- 2024年捐赠，2026年已到1.3.0
-- 约每季度一个大版本
-
-### Issue/PR响应
-- GitHub Issues活跃（255+ open issues）
-- Slack社区频道
-- 邮件列表
-- **平均响应时间**：无公开数据，从 Issue #4206 等看维护者响应较及时
-
-### RFC/Design流程
-- ✅ GitHub Discussions 用于设计讨论
-- ✅ GitHub Issues 支持 RFC 标签
-- ⚠️ 无正式 RFC 文档规范（如 Gravitino 的 ADR 流程）
-- **社区争议点**：主要集中在是否支持 Delta/Hudi 等非 Iceberg 格式（Issue #4121）
+### 源码侧观察
+- 仓库模块划分、测试、扩展、Helm、docs 结构都比较完整，说明工程化质量是明显高于“概念性开源项目”的。
 
 ---
 
-## J. License与商业化
+## J. License 与商业化
 
-### 开源协议
-- **Apache License Version 2.0** ✅
-- 无附加商业条款（不同于BSL/Elastic License）
+### License
+- Apache License 2.0。
+- 对 fork、二次开发、商用集成都比较友好。
 
-### 托管版/企业版
-- **无商业版**：纯开源
-- Snowflake使用自己的商业版本（代码同源但独立维护）
-- ⚠️ **与 Snowflake 商业版的关系**：Polaris 是 Snowflake 推动的开放标准，但 Snowflake 内部使用的是高度定制化的闭源版本，不等于 Polaris 的企业版
+### 商业化边界
+- Polaris 由 Snowflake 发起并捐赠，但不能简单理解为 Snowflake 商业产品的 OSS/Enterprise 双版本拆分。
+- 更准确地说，它是 Snowflake 推动的一个开源 Iceberg Catalog 路线项目。
 
-### Fork 与二次开发
-- ✅ 代码可完全 fork，无功能阉割
-- ⚠️ **Snowflake 定制能力**：Snowflake 可能在其商业版本中做了额外的云集成和性能优化，但这部分未开源
-- ⚠️ **Trademark 限制**：使用 "Apache Polaris" 名称需遵守 ASF Trademark 政策
-
-### 可Fork性评估
-| 因素 | 评估 |
-|---|---|
-| 核心模块耦合度 | 低（模块化设计） |
-| 云厂商依赖 | 可配置 |
-| 商业功能剥离难度 | 低（无明显阉割位） |
-| 代码自洽程度 | 高 |
-
-### Trademark
-- "Apache Polaris"是ASF商标
-- 引擎logo（Dremio®、StarRocks等）是各自商标
+### Fork 可行性
+- 从许可和模块结构看，fork 可行性较高。
+- 但真正代价集中在长期维护：
+  - Iceberg REST 兼容演进
+  - Federation
+  - OIDC / token / credential vending
+  - JDBC schema 与元数据兼容
 
 ---
 
-## K. RoadMap与趋势
+## K. Roadmap 与趋势
 
-### 官方Roadmap
-- 无公开正式Roadmap文档
-- 通过GitHub Issues和Discussion了解方向
+### 可观察方向
+- 持续增强 federation。
+- 持续增强安全与策略体系：
+  - OIDC
+  - external PDP / OPA
+  - policy framework
+- 把部分数据维护规则上提到 policy 层。
 
-### 近期发展动态（从Issue推断）
-| Issue | 方向 |
-|---|---|
-| #4121 | **Delta REST Catalog API支持** |
-| #4227 | Namespace CRUD事件持久化 |
-| #4200 | createTableStaged幂等性支持 |
-| #4112 | Per-Realm授权配置 |
-| #4107 | HMS federation集成测试 |
+### 不太像短期主方向的内容
+- AI Asset Catalog
+- 多表格式统一 Catalog
+- Git-like 数据版本控制
 
-### 竞品响应
-- 对Gravitino的联邦式架构暂无直接响应
-- 对Unity Catalog的AI Asset热潮保持观望
-- **差异化方向**：坚持 Iceberg REST 标准优先，不追求大而全
-
-### 社区讨论中的争议点
-| 话题 | 争议 |
-|---|---|
-| #4121 Delta/Hudi/Paimon 支持 | 部分用户认为应该支持，团队坚持 Iceberg 优先 |
-| 单体 vs 微服务架构 | 有声音希望改用微服务，但维护者认为单体更简单 |
-| Storage Credential Vending | 阿里云/腾讯云用户希望扩展到更多云厂商 |
-
-### 与竞品的相互影响
-- **vs Gravitino**：两者路线不同，Polaris 专注 Iceberg REST，Gravitino 走联邦路线
-- **vs Unity Catalog**：Polaris 的开放性更受社区好评，但功能宽度差距明显
-- **vs Nessie**：Polaris 不做 Git-like 版本控制，差异化竞争
+### 设计趋势判断
+- Polaris 的路线越来越清晰：
+  - Iceberg-first
+  - REST-first
+  - Open interoperability
+  - Security / policy / federation 增强
 
 ---
 
 ## L. 已知缺陷与局限
 
-### 关键Bug（从GitHub Issues）
-| Issue | 描述 | 严重度 |
-|---|---|---|
-| #4219 | listGrantsForCatalogRole返回CATALOG_ROLE实体类型错误 | 中 |
-| #4206 | PyIceberg purge tables时抛出ContextNotActiveException | 中 |
-| #4180 | Federated HMS catalog测试用例缺失 | 低 |
-| #4156 | External Catalog 权限继承逻辑不清晰 | 中 |
-| #4138 | 多 Realm 间元数据可见性问题 | 中 |
-| #4119 | OAuth2 token 刷新竞态条件 | 高 |
+### 已证实局限
+1. 定位较窄，核心是 Iceberg Catalog，而不是通用数据治理平台。
+2. 没有 Git-like branch/tag/merge 模型。
+3. 没有独立的跨 Catalog 分布式事务系统。
+4. 没有 AI/ML 资产对象模型。
+5. 没有搜索、血缘、数据质量等重治理能力。
+6. 没有原生行级过滤、列级脱敏这类细粒度数据面治理能力。
+7. 大规模生产成熟度公开材料有限。
+8. 高可用、容灾、超大规模最佳实践公开信息不充分。
 
-### 设计局限
-1. **不支持跨表/跨Catalog事务**（vs Nessie的Multi-table commit）
-2. **不支持Branch/Tag Git-like版本控制**（vs Nessie核心特性）
-3. **不支持AI/ML资产治理**（vs Unity Catalog）
-4. **不支持非Iceberg格式**（Delta/Hudi/Paimon）
-5. **不支持列级/行级动态Masking**
-6. **不支持结果缓存**
-7. **单体架构无HA方案**
-8. **不支持存储优化调度**（Compaction/Clustering 由引擎侧自主）
-9. **不提供列级统计信息收集**（NDV/Bloom Filter）
-10. **不提供 AI/ML 扩展点**（Feature Store/Model Registry）
-
-### 生产规模风险
-- 项目较新（2024年捐赠ASF）
-- 公开生产案例有限
-- 无大规模（1000+表）场景验证
+### 源码级佐证
+- `commitTransaction(...)` 直接委托 Iceberg handler，而非引入独立全局事务协调器。
+- policy 主要是维护策略，而非数据面细粒度安全策略。
+- 实体类型系统中没有 model、feature、vector、volume 等一等对象类型。
 
 ---
 
 ## 设计启示
 
-基于Polaris调研，对自研Catalog项目的启示：
+### 值得借鉴
+1. 以 Iceberg REST 作为产品边界，生态兼容成本低。
+2. 统一实体树 + 类型系统，比为每类对象单独造表更利于扩展。
+3. 把权限、凭证、策略、事件纳入同一个控制面元数据体系。
+4. 把 realm 作为统一隔离键，能同时贯穿请求、鉴权和持久化。
+5. 把存储优化先建模成 policy，再决定是否单独引入执行器，是一种更稳妥的演进路径。
 
-### 应该借鉴
-1. **Iceberg REST优先策略**：Polaris完整实现REST Spec，验证了该路线的技术可行性
-2. **Credential Vending模式**：安全地委托存储访问权限，值得参考
-3. **Realm多租户隔离**：逻辑隔离方案轻量且有效
-4. **模块化架构**：Core/API/Runtime/Persistence分离，便于定制
+### 不应照搬
+1. 不要把 Polaris 的 federation 增强误判为“多表格式统一 Catalog”。
+2. 不要把 policy framework 等同于策略执行引擎。
+3. 如果自研目标包含 AI 资产、血缘、搜索、质量，Polaris 的模型宽度明显不够。
 
-### 应该避免
-1. **不做大而全**：Polaris聚焦Iceberg，避免过度扩展
-2. **不重复造轮子**：HMS/OPA等集成优于自建
+### 架构选项小结
 
-### 待决策点映射
-| 决策问题 | Polaris答案 | 自研参考 |
+| 架构选项 | Polaris 的取舍 | 对自研 Lakehouse Table Catalog 的启示 |
 |---|---|---|
-| 是否做Git-like版本控制 | 否 | 可参考Nessie |
-| 是否做跨表事务 | 否 | 需自己决策 |
-| 是否做AI Asset一等公民 | 否 | 需调研Unity |
-| 存储优化放哪层 | 引擎侧 | 需决策 |
-| 是否基于REST Spec | 是 | **强烈建议** |
-| 是否做BI工具直接集成 | 否 | Polaris通过引擎间接支持 |
-| 是否做存储层优化调度 | 否 | 引擎侧自主原则 |
-| 是否支持多云厂商存储 | ⚠️ 阿里/腾讯/华为云不支持 | 自研需考虑 |
+| 产品边界 | 聚焦 Iceberg Catalog，而不是大一统数据治理平台 | 第一阶段宜先收敛边界，优先做强 Table Catalog 控制面 |
+| 协议路线 | Iceberg REST First，同时保留 Management API / Catalog API | 若目标是多引擎互操作，建议优先以 Iceberg REST 为核心兼容面 |
+| 系统形态 | 单服务进程 + 模块扩展，不走重微服务矩阵 | 早期自研宜优先单体或强模块化单体，降低协调成本 |
+| 核心模型 | 统一实体树 + 类型系统 | 比“每类对象一套独立模型”更适合快速扩展 catalog/role/policy 等对象 |
+| 权限模型 | Principal Role + Catalog Role 双层 RBAC | 值得重点借鉴，可把平台身份与 catalog 内授权边界拆开 |
+| 认证设计 | 统一认证器 + realm 配置 + 请求级角色激活 | 适合企业环境，建议避免把身份解析、授权激活、租户隔离揉成一个黑盒 |
+| 多租户方案 | realm 贯穿请求、鉴权、持久化 | 如果自研需要多租户，建议尽早决定隔离主键，不要后补 |
+| 控制面事务 | 由 metastore manager 统一封装 | 建议把实体、授权、policy、secret、幂等等控制面变更放到统一事务边界里 |
+| 数据面事务 | 依赖 Iceberg 语义，不自建全局事务协调器 | 第一阶段应尽量复用表格式语义，不建议过早做跨 Catalog 全局事务 |
+| 持久化选型 | RDBMS + JDBC schema 演进 | 对第一阶段 Catalog 控制面，关系型数据库通常是更稳妥的默认选项 |
+| Policy 建模 | policy 独立对象化，并通过 mapping 绑定目标 | 如果未来要接生命周期、治理、维护策略，建议尽早对象化 policy |
+| 存储优化职责 | 建模治理，不亲自执行 compaction / expiry | 可采用“Catalog 管规则，执行器跑任务”的分层，而非把执行器硬塞进 Catalog |
+| Credential Vending | 做进 Iceberg REST 主路径 | 如果目标包含企业级多云安全访问，这项能力最好早设计、早进入主协议 |
+| Federation | 正式能力边界之一 | 适合后续演进方向，但不建议在最小可用阶段过度扩展 |
+| 事件与审计 | 结构化事件，而非仅日志 | 若后续要接审计、异步治理、血缘采集，建议保留事件通道能力 |
+| 非目标能力 | 不覆盖 AI/ML 资产、搜索、血缘、质量全家桶 | 若自研目标包含这些，需要额外设计上层模型，不应直接套 Polaris 路线 |
+
+### 对自研 Lakehouse Table Catalog 的启示
+
+| 决策问题                       | Polaris 的答案 | 对自研的启示                             |
+| ------------------------------ | -------------- | ---------------------------------------- |
+| 是否基于 Iceberg REST Spec     | 是             | 建议优先采用                             |
+| 是否做 Git-like 版本控制       | 否             | 若需要可参考 Nessie                      |
+| 是否做多表格式统一             | 否             | 若要做需额外参考 Gravitino / Unity       |
+| 是否把权限做进 Catalog         | 是             | 非常值得借鉴                             |
+| 是否做 Credential Vending      | 是             | 建议重点评估                             |
+| 是否把存储优化执行放在 Catalog | 否             | 可考虑"Catalog 管策略，执行器跑任务"     |
+| 是否把 AI Asset 作为一等公民   | 否             | 若目标包含 AI 资产，需另补模型层         |
+| 多租户隔离方案                 | realm          | 建议尽早决定隔离主键，不要后补           |
+| 持久化选型                     | RDBMS + JDBC   | 对控制面元数据，关系型是更稳妥的默认选项 |
 
 ---
 
+## 结论
 
-## 总结
+### 一句话判断
+**Polaris 是当前较有代表性的、面向 Apache Iceberg 的开放 REST Catalog 实现之一，优势在开放互操作、权限模型、credential vending、federation 和工程化完整度；短板在资产模型宽度、重治理能力、跨域事务和超大规模成熟度。**
 
-### 评分标准说明
+### 核心优势
 
-| 评分维度 | 评分 | 评分依据 |
-|---|---|---|
-| Iceberg REST 标准合规 | ⭐⭐⭐⭐⭐ | 完整实现 Iceberg REST Catalog Spec v1，是 ASF 官方孵化项目，协议兼容性最高 |
-| 多引擎互操作 | ⭐⭐⭐⭐ | 支持 Spark、Flink、Trino、StarRocks、Doris 等主流引擎，但 HMS Thrift 不支持 |
-| 安全/权限 | ⭐⭐⭐ | 内置 RBAC + OPA 集成 + Credential Vending，但缺少列级动态 Masking、行级过滤 |
-| AI/ML 支持 | ⭐ | 完全不支持（Feature Store、Model Registry、Vector Search 均为空白） |
-| 跨表事务 | ⭐ | 仅支持单表原子提交，不支持跨表/跨 Catalog 事务（vs Nessie 的 Multi-table commit） |
-| 社区成熟度 | ⭐⭐⭐ | ASF 孵化项目，Snowflake 背景，但 Stars 1.9k、Contributors 50+，规模较小 |
-| 生产成熟度 | ⭐⭐ | 2024 年捐赠，仍在 1.x 版本，公开生产案例有限，无大规模验证 |
+| 维度               | 结论                                                        |
+| ------------------ | ----------------------------------------------------------- |
+| 协议标准           | 全面兼容 Iceberg REST Catalog Spec，是事实标准的重要实现    |
+| 权限模型           | Principal Role + Catalog Role 双层 RBAC，隔离清晰           |
+| Credential Vending | 直接嵌入 Iceberg REST 流程，支持临时对象存储凭证下发        |
+| Federation         | 正式支持外部 Iceberg REST / Hive Catalog 接入               |
+| Policy Framework   | 预定义维护策略（Compaction / Expiry / Orphan Removal）建模  |
+| 工程化质量         | 模块化架构、版本化 schema、Quarkus 运行时、Helm/Docker 完整 |
+| License            | Apache 2.0，fork 与商用友好                                 |
 
-### 评分细则
+### 核心局限
 
-| 维度 | 5分 | 4分 | 3分 | 2分 | 1分 |
-|---|---|---|---|---|---|
-| **Iceberg REST 标准合规** | 完整实现所有必选 API | 95%+ API 实现 | 80%+ 实现，核心功能完整 | 60%+ 实现 | <60% 或非兼容实现 |
-| **多引擎互操作** | 8+ 主流引擎官方支持 | 5-7 引擎官方支持 | 3-4 引擎支持 | 1-2 引擎支持 | 单一引擎或测试阶段 |
-| **安全/权限** | RBAC+ABAC+列级+行级+动态Masking+审计全 | RBAC+OPA+列级/行级部分 | RBAC+OPA 集成 | 基础 RBAC | 无权限模型或仅白名单 |
-| **AI/ML 支持** | Feature Store + Model Registry + Vector + ML 框架全集成 | 2 项主要功能 | 1 项主要功能或实验性 | 社区讨论中 | 明确不支持 |
-| **跨表事务** | 分布式跨 Catalog 事务 | 跨表单 Catalog 事务 | 单表 + 基础事务 | 单表乐观锁 | 无事务模型 |
-| **社区成熟度** | 10k+ Stars，活跃 PMC，成熟生态 | 5k+ Stars，定期发布 | 1k+ Stars，社区活跃 | <1k Stars，小社区 | 边缘项目 |
-| **生产成熟度** | 100+ 公开生产案例，HA/DR 完善 | 数十案例，HA 可用 | 数个案例，功能稳定 | 早期案例 | 实验室阶段 |
+| 维度          | 结论                                                |
+| ------------- | --------------------------------------------------- |
+| 资产模型宽度  | 仅覆盖 Iceberg Table/View，不支持 Delta/Hudi/Paimon |
+| AI/ML 资产    | 无 Model / Feature / Vector 等一等对象              |
+| 跨表事务      | 不主打全局分布式事务，依赖 Iceberg 自身语义         |
+| Git-like 版本 | 不支持 Branch / Tag / Merge（与 Nessie 路线不同）   |
+| 重治理能力    | 无搜索、血缘、数据质量、列级/行级安全               |
+| 生产成熟度    | HA/DR 最佳实践、规模案例公开信息有限                |
+
+### 适用场景
+
+- 目标明确聚焦在 **Iceberg Catalog**，暂不追求多表格式统一
+- 需要多引擎（Spark / Flink / Trino / Doris / StarRocks）共享 Iceberg 表
+- 希望把 **权限控制** 和 **对象存储临时凭证下发** 收敛到 Catalog 层
+- 需要 Federation 接入外部 Iceberg REST Catalog 或 Hive Metastore
+- 接受"治理能力偏控制面，不覆盖重数据治理"的边界
+
+### 不适用场景
+
+- 目标是统一所有数据资产的**大一统 Catalog**（应考虑 Unity Catalog / Gravitino）
+- 需要 **Git-like** branch/tag/merge 版本控制（应参考 Nessie）
+- 需要 **Feature Store / Model Registry / Vector** 等 AI 资产对象（应参考 Unity Catalog）
+- 需要**非常成熟的大规模 HA/DR**落地经验背书（当前公开案例有限）
+- 需要**列级/行级安全**、血缘、数据质量等重治理能力
 
 ### 综合评价
-
-**Polaris 当前定位**：一个**聚焦 Iceberg REST 标准**的轻量级 Catalog，在协议合规性和开放性上表现出色，但功能宽度和成熟度有限。
-
-**优势**
-1. **协议优先**：完整实现 Iceberg REST Spec，为多引擎互操作提供标准接口
-2. **开放透明**：Apache 2.0 协议，无商业锁定，代码可完全 fork
-3. **安全设计**：Credential Vending + RBAC + OPA 集成，安全性较高
-4. **架构简洁**：单体架构易于部署和运维，Realm 多租户隔离轻量有效
-
-**劣势**
-1. **功能单一**：仅支持 Iceberg，AI/ML 资产、跨表事务、血缘等能力空白
-2. **规模有限**：项目较新，Stars 1.9k，无大规模生产验证
-3. **云厂商局限**：阿里云、腾讯云、华为云等国内云厂商不支持
-4. **社区争议**：对 Delta/Hudi 支持有分歧，单体 vs 微服务架构有不同声音
-
-**适合场景**：纯 Iceberg 生态、需求简单（仅表元数据 + 权限）、多引擎共享
-
-**不适合场景**：需要 AI/ML 资产治理、跨表事务、Git-like 版本控制、超大规模生产
-
----
-
-*调研时间：2026-04-17*
+- 如果你的自研方向是“开放 Iceberg Catalog 服务”，Polaris 非常值得深读，尤其是：
+  - 统一实体建模
+  - RBAC 分层
+  - credential vending
+  - policy mapping
+  - realm 隔离
+  - JDBC 持久化 schema 设计
+- 如果你的目标是“更宽的 Lakehouse / AI 统一资产目录”，Polaris 更适合作为一个 **控制面骨架参考**，而不是完整产品蓝本。
 
 ---
 
 ## 参考资料
 
 ### 官方资料
-| 类型 | 链接 |
-|---|---|
-| 官网 | https://polaris.apache.org/ |
-| GitHub 仓库 | https://github.com/apache/polaris |
-| 官方文档 | https://polaris.apache.org/docs/ |
-| Operator Guide | https://polaris.apache.org/docs/operator-guide/ |
-| OpenAPI Spec | https://github.com/apache/polaris/blob/main/polaris-openapi.yaml |
-| ASF 孵化器状态 | https://incubator.apache.org/projects/polaris.html |
 
-### 版本与发布
-| 类型 | 链接 |
-|---|---|
-| GitHub Releases | https://github.com/apache/polaris/releases |
-| CHANGELOG | https://github.com/apache/polaris/blob/main/CHANGELOG.md |
-| 版本对比 | https://github.com/apache/polaris/compare |
+- Apache Polaris 1.3.0 文档：https://polaris.apache.org/releases/1.3.0/
+- Apache Polaris 发布页：https://polaris.apache.org/downloads/
+- Apache Polaris GitHub 仓库：https://github.com/apache/polaris
+- Apache Polaris Releases 索引：https://polaris.apache.org/releases/
+- ASF Incubator 页面：https://incubator.apache.org/projects/polaris.html
 
-### 社区与讨论
-| 类型 | 链接 |
-|---|---|
-| GitHub Issues | https://github.com/apache/polaris/issues |
-| GitHub Discussions | https://github.com/apache/polaris/discussions |
-| Slack 频道 | https://polarincubator.slack.com/ |
-| Apache 邮件列表 | https://lists.apache.org/list.html?polaris@apache.org |
+### 关键文档
 
-### 关键 Issue 参考
-| Issue | 链接 |
-|---|---|
-| #4121 Delta/Hudi/Paimon 支持讨论 | https://github.com/apache/polaris/issues/4121 |
-| #4227 Namespace CRUD 事件持久化 | https://github.com/apache/polaris/issues/4227 |
-| #4206 PyIceberg purge tables bug | https://github.com/apache/polaris/issues/4206 |
-| #4219 CATALOG_ROLE 实体类型错误 | https://github.com/apache/polaris/issues/4219 |
-| #4200 createTableStaged 幂等性 | https://github.com/apache/polaris/issues/4200 |
-| #4112 Per-Realm 授权配置 | https://github.com/apache/polaris/issues/4112 |
-| #4107 HMS Federation 集成测试 | https://github.com/apache/polaris/issues/4107 |
-| #4156 External Catalog 权限继承 | https://github.com/apache/polaris/issues/4156 |
-| #4138 多 Realm 元数据可见性 | https://github.com/apache/polaris/issues/4138 |
-| #4119 OAuth2 token 刷新竞态 | https://github.com/apache/polaris/issues/4119 |
-
-### 部署与生态
-| 类型 | 链接 |
-|---|---|
-| Helm Chart | https://github.com/apache/polaris/tree/main/polaris-helm |
-| Docker 镜像 | https://hub.docker.com/r/apache/polaris |
-| 与 Spark 集成 | https://github.com/apache/polaris#apache-spark |
-| 与 Flink 集成 | https://github.com/apache/polaris#apache-flink |
-| 与 Trino 集成 | https://github.com/apache/polaris#trino |
-
-### 相关标准与竞品
-| 类型 | 链接 |
-|---|---|
-| Iceberg REST Catalog Spec | https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml |
-| Apache Iceberg 官网 | https://iceberg.apache.org/ |
-| Apache Gravitino | https://gravitino.apache.org/ |
-| Project Nessie | https://projectnessie.org/ |
-| Unity Catalog OSS | https://github.com/unitycatalog/unitycatalog |
-| LakeKeeper | https://github.com/Lakekeeper/lakekeeper |
-
-### 第三方博客与演讲
-| 类型 | 链接 |
-|---|---|
-| Snowflake 官方博客 (Polaris 发布) | https://www.snowflake.com/blog/polaris-open-source-iceberg-catalog/ |
-| ASF 博客 (Polaris 捐赠公告) | https://blogs.apache.org/ |
-| Data + AI Summit 演讲 | https://www.databricks.com/data-ai-summit |
-
----
-
-*信息来源：Apache Polaris官方文档、GitHub仓库、ASF孵化器状态*
+- Configuration：https://polaris.apache.org/releases/1.3.0/configuration/
+- Creating a Catalog：https://polaris.apache.org/releases/1.3.0/getting-started/creating-a-catalog/
+- Using Polaris：https://polaris.apache.org/releases/1.3.0/getting-started/using-polaris/
+- Realm：https://polaris.apache.org/releases/1.3.0/realm/
+- Access Control（in-dev 路径更完整）：https://polaris.apache.org/in-dev/unreleased/managing-security/access-control/
+- OPA Integration：https://polaris.apache.org/releases/1.3.0/managing-security/external-pdp/opa/
+- Policy Framework：https://polaris.apache.org/releases/1.3.0/policy/
+- Iceberg REST Federation：https://polaris.apache.org/releases/1.3.0/federation/iceberg-rest-federation/
+- Telemetry：https://polaris.apache.org/releases/1.3.0/telemetry/
