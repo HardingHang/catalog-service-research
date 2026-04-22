@@ -46,17 +46,61 @@
 ### 顶层抽象
 
 ```text
-Realm
-  └─ Catalog
+Realm（最高隔离单元）
+  └─ Catalog（存储桶/业务边界）
       └─ Namespace（支持嵌套）
-          ├─ Table
-          ├─ View
+          ├─ Table（表）
+          ├─ View（视图）
           └─ Policy（可附着到 catalog/namespace/table/view）
 
-控制面对象：
-- Principal
-- Principal Role
-- Catalog Role
+控制面对象（独立于数据面层级）：
+- Principal（用户/服务身份）
+- Principal Role（平台级角色）
+- Catalog Role（Catalog 内局部角色）
+```
+
+#### 各层说明
+
+| 层级 | 含义 | 说明 |
+|---|---|---|
+| **Realm** | 多租户隔离单元 | 请求路由、鉴权、持久化的统一隔离键；JDBC schema 全表带 `realm_id` |
+| **Catalog** | 存储桶 / 业务边界 | 对应一个 Iceberg Catalog 或外部联邦 Catalog；管理存储配置、存储凭证 |
+| **Namespace** | 命名空间（支持嵌套） | 层级结构：`Catalog → NS → NS → Table`；类似于数据库的 schema 分层 |
+| **Table / View** | 表和视图 | 在 Polaris 内部统一为 `TABLE_LIKE` 实体，通过 subtype 区分 |
+| **Policy** | 维护治理规则 | 可附着到任意层级；当前主要是 `system.*` 预定义维护策略 |
+
+#### 控制面对象说明
+
+| 对象 | 作用域 | 作用 |
+|---|---|---|
+| **Principal** | 全局 | 用户或服务账号的身份标识 |
+| **Principal Role** | 全局 | 平台级角色（如 `admin`、`developer`）；可分配给 Principal |
+| **Catalog Role** | 单 Catalog 内 | Catalog 内局部权限边界（如 `data_writer`、`readonly`）；需绑定到 Principal Role |
+
+#### 层级关系图
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Realm                                 │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │                    Catalog                            │   │
+│  │  ┌─────────────────────────────────────────────┐    │   │
+│  │  │              Namespace (可嵌套)               │    │   │
+│  │  │  ┌─────────────────────────────────────┐    │    │   │
+│  │  │  │    Table / View + Policy            │    │    │   │
+│  │  │  └─────────────────────────────────────┘    │    │   │
+│  │  └─────────────────────────────────────────────┘    │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                              │
+│  ┌──────────────┐    ┌──────────────────┐                   │
+│  │   Principal  │───▶│  PrincipalRole   │                   │
+│  └──────────────┘    └────────┬─────────┘                   │
+│                               │ 关联                          │
+│                      ┌────────▼─────────┐                   │
+│                      │  CatalogRole     │                   │
+│                      │  (在特定 Catalog) │                   │
+│                      └──────────────────┘                   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ### 源码级模型说明
@@ -126,12 +170,89 @@ Realm
 #### 6. Principal Role 与 Catalog Role 双层角色模型
 - `PrincipalRoleEntity` 是顶层实体，`parentId` 绑定到 root，说明它是全局角色。
 - `CatalogRoleEntity` 则挂在 catalog 下，说明它是 catalog 内局部角色。
-- 这一设计把“平台级身份聚合”和“catalog 内授权边界”拆开了：
+- 这一设计把”平台级身份聚合”和”catalog 内授权边界”拆开了：
   - Principal Role：承接 principal 到平台角色的映射。
   - Catalog Role：承接 catalog 内具体资源权限。
 - 这也是 Polaris RBAC 的核心结构。
   - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\entity\PrincipalRoleEntity.java:65-89`
   - 参考：`D:\project\polaris\polaris-core\src\main\java\org\apache\polaris\core\entity\CatalogRoleEntity.java:62-75`
+
+##### 6.1 RBAC 权限管理机制
+
+###### 层级结构
+
+```
+Principal（用户/服务账号）
+    ├─ 激活 → PrincipalRole（平台级角色，可分配多个）
+    │       └─ 激活 → CatalogRole（在特定 Catalog 内的角色）
+    │               └─ 持有 → Grant（具体资源权限）
+    └─ 持有 → 直接 Grant（少量特殊权限）
+```
+
+| 实体 | 作用域 | 层级 | 说明 |
+|---|---|---|---|
+| Principal | 全局 | root 下 | 对应一个用户或服务账号 |
+| PrincipalRole | 全局 | root 下 | 平台级角色，如 `admin`、`developer` |
+| CatalogRole | 单 Catalog | Catalog 下 | Catalog 内局部角色，如 `data_writer`、`readonly` |
+| Grant | 可细化 | 多级 | 关联 CatalogRole 与目标资源（catalog/namespace/table/view/policy） |
+
+###### 授权对象类型
+
+Grant 可授权的目标对象类型：
+- `CATALOG` - 整个 Catalog
+- `NAMESPACE` - 命名空间（含嵌套）
+- `TABLE` - 表
+- `VIEW` - 视图
+- `POLICY` - 策略
+
+###### 认证与授权流程
+
+```
+1. 请求进入 → DefaultAuthenticator
+                ├─ 解析 Principal（从 token/credential 中提取身份）
+                ├─ 从请求中获取要激活的 PrincipalRole
+                └─ 从 Metastore 加载该 Principal 的所有 Grants
+                    → 计算出最终 Active Roles（PrincipalRole + CatalogRole 组合）
+
+2. 鉴权时 → 检查 Active Roles 是否持有目标资源的必要权限
+```
+
+关键点：
+- **Principal Role 是平台级激活凭证**，决定用户可以在哪些 Catalog 内做什么
+- **Catalog Role 是 Catalog 内权限边界**，决定在特定 Catalog 内的具体操作能力
+- **双层解耦**：平台身份和单个 Catalog 的权限分开管理，便于跨 Catalog 权限管理
+
+###### 角色分配示例
+
+```sql
+-- 创建一个 principal（用户）
+CREATE PRINCIPAL alice;
+
+-- 创建一个平台级角色
+CREATE PRINCIPAL ROLE data_engineer;
+
+-- 将平台角色分配给用户（用户 Alice 激活 data_engineer 角色）
+GRANT PRINCIPAL_ROLE data_engineer TO PRINCIPAL alice;
+
+-- 在某个 Catalog 下创建 Catalog 级角色
+CREATE CATALOG_ROLE data_writer IN my_catalog;
+
+-- 给 Catalog 角色授权（在 my_catalog 下的 namespace foo 上有写权限）
+GRANT USAGE ON NAMESPACE foo TO CATALOG_ROLE data_writer;
+GRANT SELECT,INSERT,UPDATE ON TABLE foo.users TO CATALOG_ROLE data_writer;
+
+-- 将 Catalog 角色分配给平台角色
+GRANT CATALOG_ROLE data_writer TO PRINCIPAL_ROLE data_engineer;
+```
+
+###### 与 OPA 的集成
+
+Polaris 支持将外部 Policy Decision Point（PDP）委托给 OPA：
+- Polaris 作为 Policy Administration Point（PAP）
+- 授权决策可交给外部 OPA 处理
+- 适用于复杂 ABAC 策略场景
+
+  参考：`D:\project\polaris\runtime\service\src\main\java\org\apache\polaris\service\admin\PolarisAdminService.java:1975-2065`
 
 #### 7. Policy 是一等对象
 - `PolicyEntity` 不是附在资源上的松散 JSON，而是独立实体类型 `POLICY`。
@@ -191,7 +312,7 @@ Realm
   - 参考：`D:\project\polaris\persistence\relational-jdbc\src\main\java\org\apache\polaris\persistence\relational\jdbc\models\ModelEntity.java:86-137`
 
 ### 结论
-- Polaris 的核心建模不是“丰富资产模型”，而是“围绕 Iceberg Catalog 的统一实体树”。
+- Polaris 的核心建模不是”丰富资产模型”，而是”围绕 Iceberg Catalog 的统一实体树”。
 - 它把扩展重点放在：
   - RBAC
   - Federation
@@ -199,6 +320,62 @@ Realm
   - Policy / 维护规则
   - Event / Idempotency
 - 它没有把 AI/ML 资产、搜索、血缘、质量等纳入同一元数据主模型。
+
+### 9. Generic Table API（非 Iceberg 表格式的扩展机制）
+
+#### 背景与设计动机
+
+Polaris 最初定位为 Iceberg REST Catalog，但实际环境中存在大量 Delta Lake、Hudi、Paimon、Lance 等表格式。为了在 Polaris 中统一管理这些格式，Polaris 引入了 **Generic Table API** 作为扩展机制。
+
+#### 核心概念
+
+Generic Table 是 Polaris 中的一种**通用表实体**，不依赖特定表格式的元数据规范：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| **name** | 是 | 表在命名空间内的唯一标识符 |
+| **format** | 是 | 表格式标识（如 `delta`、`csv`、`lance`） |
+| **base-location** | 否 | 表根目录的 URI（如 `s3://bucket/path/to/table`） |
+| **properties** | 否 | 键值对格式的扩展属性 |
+| **doc** | 否 | 表的描述信息 |
+
+#### Generic Table API vs Iceberg Table API
+
+Polaris 为两类表提供了不同的 API 端点：
+
+| 操作 | Iceberg Table API | Generic Table API |
+|---|---|---|
+| Create Table | `POST .../namespaces/{ns}/tables` | `POST .../namespaces/{ns}/generic-tables` |
+| Load Table | `GET .../namespaces/{ns}/tables/{table}` | `GET .../namespaces/{ns}/generic-tables/{table}` |
+| Drop Table | `DELETE .../namespaces/{ns}/tables/{table}` | `DELETE .../namespaces/{ns}/generic-tables/{table}` |
+| List Tables | `GET .../namespaces/{ns}/tables` | `GET .../namespaces/{ns}/generic-tables` |
+
+两种 API 的**命名空间层级共享**，但表格式操作完全隔离。
+
+#### 支持的格式
+
+当前 Generic Table API 主要支持以下格式：
+
+| 格式 | 状态 | 说明 |
+|---|---|---|
+| Lance | 正式支持 | 2026-01 官方集成，有完整 Lance Namespace 实现 |
+| Delta Lake | 理论支持 | API 层面支持 `format=delta`，但无深度集成 |
+| CSV / Parquet | 理论支持 | 可注册为 Generic Table，但无写入治理 |
+
+#### 局限性
+
+| 能力 | 当前状态 | 原因 |
+|---|---|---|
+| Credential Vending | **不支持** | 非 Iceberg 格式不通过 REST Catalog 路径读写数据 |
+| Table Commit Path | **受限** | Delta/Lance 等格式创建后不通过 Catalog 提交 |
+| 元数据完整性 | **弱** | Generic Table 只记录 location，不解析格式内部元数据 |
+| 事务支持 | **无** | 各格式自身负责 ACID 语义，Catalog 不参与 |
+
+#### 设计启示
+
+1. **Generic Table API 是 Polaris 扩展多表格式的官方路径**，但各格式的深度集成取决于该格式是否愿意将 Catalog 作为信任源
+2. **信任链断裂问题**：Iceberg 通过 REST Catalog 路径实现元数据权威，而 Delta/Lance 等格式的元数据在格式自身，Catalog 只是”登记地址”
+3. **如果自研需要支持多表格式**，可参考 Generic Table API 思路，但需提前设计”格式元数据同步机制”以避免 Catalog 成为摆设
 
 ---
 
@@ -512,8 +689,9 @@ sequenceDiagram
 
 | 能力域 | Polaris 结论 | 说明 |
 |---|---|---|
-| 表格式支持 | 强支持 Iceberg | 产品定位即 Iceberg Catalog |
+| 表格式支持 | 强支持 Iceberg，扩展支持 Lance | Iceberg 是核心定位；Lance 通过 Generic Table API 接入（2026-01 官方集成） |
 | Delta/Hudi/Paimon | 不支持 | 当前不在主产品边界 |
+| Lance 格式 | 通过 Generic Table API 支持 | 支持 DeclareTable / ListTables / DescribeTable / DeregisterTable；不支持 Credential Vending 和 Commit Path |
 | Namespace / Table / View | 支持 | View 也是一等对象 |
 | 嵌套 Namespace | 支持 | 源码中有父 namespace 编码 |
 | Schema 演化 | 依赖 Iceberg / 客户端 | Polaris 主要承接 Catalog 层 |
@@ -608,8 +786,20 @@ sequenceDiagram
 
 ### AI/ML 与 BI
 - Polaris 并不直接面向 BI 平台、AI 平台或数据资产门户提供完整产品化接口，它更接近底层 catalog 控制面。
-- 更合理的消费方式仍然是“引擎通过 Iceberg REST 接 Polaris”，再由上层产品或平台承接开发、分析、建模和运营体验。
+- 更合理的消费方式仍然是”引擎通过 Iceberg REST 接 Polaris”，再由上层产品或平台承接开发、分析、建模和运营体验。
 - 对选型来说，这意味着 Polaris 适合作为 Lakehouse 元数据与访问控制底座，但并不能替代完整的数据开发平台、BI 门户或 AI 数据管理产品。
+
+### Lance 格式集成
+- Polaris 通过 **Generic Table API** 支持 Lance 格式（官方集成公告：2026-01-06）。
+- Lance 表在 Polaris 中被识别为：注册为 Generic Table + `format=lance` + `base-location` 指向 Lance 根目录 + `properties.table_type=lance`。
+- **支持的操作**：CreateNamespace、ListNamespaces、DescribeNamespace、DropNamespace、DeclareTable、ListTables、DescribeTable、DeregisterTable。
+- **支持的操作引擎**：Apache Spark、LanceDB、Ray、Trino 可通过 Lance Namespace 规范访问 Polaris 管理的 Lance 表。
+- **不支持的能力**：
+  - Credential Vending（未来计划支持）
+  - OAuth 客户端刷新（未来计划支持）
+  - Table Commit Path（Delta/Lance 创建后不通过 Catalog 提交，难以实现集中治理）
+- **设计启示**：Generic Table API 是 Polaris 扩展多表格式的官方路径，但高级治理能力（如凭证下发、提交控制）仍受限于各格式自身语义。
+- 参考：`D:\project\polaris\site\content\blog\2026\01\06\lance-integration.md`
 
 ---
 
