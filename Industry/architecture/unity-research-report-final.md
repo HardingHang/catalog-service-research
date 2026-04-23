@@ -47,19 +47,19 @@
 
 ### 2.1 支持矩阵
 
-| 类别 | 当前公开支持状态 | 当前公开实现形态 | 结论 |
-|---|---|---|---|
-| Delta Lake | 明确支持 | Core 表 API + Spark 连接器 + staging/commit 路径 | 一等公民，能力最完整 |
-| Parquet | 明确支持 | 外部表 `DataSourceFormat` | 可直接作为外部表 |
-| ORC | 明确支持 | 外部表 `DataSourceFormat` | 可直接作为外部表 |
-| JSON | 明确支持 | 外部表格式 + Volume 文件 | 表/文件两条路径 |
-| CSV | 明确支持 | 外部表 `DataSourceFormat` | 可直接作为外部表 |
-| AVRO | 明确支持 | 外部表 `DataSourceFormat` | 可直接作为外部表 |
-| TEXT | 明确支持 | 外部表 `DataSourceFormat` + Volume | 表/文件两条路径 |
-| Apache Iceberg | 明确支持（协议适配层） | Iceberg REST + Uniform 元数据可见性 | 非 `provider` 同层选项 |
-| Apache Hudi | 声明支持 | 主页/README 提及（via UniForm） | 实现细节公开不足 |
-| Lance | 文档明确提及 | Volume 场景（Lance datasets） | 未见 Lance 原生表协议 |
-| 其他非表格资产 | 明确支持 | Volume | 受治理但非表语义 |
+  | 对象 | 归属层 | 是否可直接作为 /tables 的 data_source_format | 主要入口 | 结论 |
+  |---|---|---|---|---|
+  | DELTA | 表格式 | 是 | /tables（含 managed delta 路径） | 一等公民 |
+  | PARQUET | 表格式 | 是 | /tables | 外部表可用 |
+  | ORC | 表格式 | 是 | /tables | 外部表可用 |
+  | JSON | 表格式/文件 | 是（表） | /tables 或 /volumes | 表/文件双路径 |
+  | CSV | 表格式 | 是 | /tables | 外部表可用 |
+  | AVRO | 表格式 | 是 | /tables | 外部表可用 |
+  | TEXT | 表格式/文件 | 是（表） | /tables 或 /volumes | 表/文件双路径 |
+  | Iceberg | 协议层 | 否 | /iceberg/v1/* | 协议适配，不是 provider 枚举 |
+  | Hudi | 声明层 | 否（当前仓库未见可核验表创建路径） | README/主页声明 | 公开实现细节不足 |
+  | Lance | 文件资产层 | 否 | /volumes | 当前定位为 Volume 数据集 |
+  | PDF等文件 | 文件资产层 | 否 | /volumes | 受治理但非表语义 |
 
 **关键校准**：`/tables` 创建路径可证实的 `DataSourceFormat` 仅 7 种；Iceberg 与 Lance 不应和这 7 种在同一层“provider 枚举”中并列。
 
