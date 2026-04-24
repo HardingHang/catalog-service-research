@@ -129,6 +129,14 @@
 | Generic/非 Iceberg 深语义 | 中（按 format 分支） | 中偏弱（轻量 CRUD） | 中偏弱（主要治理层） |
 | Lance 原生协议面 | 有专用 REST（边界明确） | 未见核心内建服务端 | 当前公开实现未见 |
 
+MCP 支持
+
+| 特性 | Unity Catalog | Apache Gravitino | Apache Polaris |
+|------|---------------|------------------|----------------|
+| 核心侧重 | 治理与执行。重点在于让 Agent 调用函数和受控访问。 | 连接与聚合。重点在于将异构数据源统一暴露给 AI。 | 标准与开放。重点在于 Iceberg 生态的 AI 互操作性。 |
+| 典型工具 | Unity Catalog MCP Server / Agent Bricks | mcp-server-gravitino (基于 FastMCP) | polaris-mcp-server |
+| 优势场景 | 企业级内部治理、闭环 AI 任务执行。 | 存在多种数据库、数据湖，需要统一语义层。 | 纯粹的 Iceberg 开放架构。 |
+
 ### 4.3 Spark 迁移路径对比
 
 | 维度 | Gravitino | Polaris | Unity Catalog |
