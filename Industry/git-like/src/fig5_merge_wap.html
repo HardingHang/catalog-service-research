@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>图5：Merge Replay 与 WAP 流程</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+  background: #f6f8fa; color: #1f2328;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 32px 20px 40px;
+}
+h2 { font-size: 18px; font-weight: 700; color: #24292f; margin-bottom: 4px; }
+.cap { font-size: 13px; color: #8c959f; margin-bottom: 22px; }
+
+.tabs { display: flex; gap: 3px; background: #fff; border: 1px solid #d0d7de; border-radius: 7px; padding: 3px; margin-bottom: 18px; }
+.tab { padding: 7px 18px; border-radius: 5px; font-size: 13px; cursor: pointer; border: none; background: transparent; color: #57606a; font-family: inherit; transition: all 0.18s; }
+.tab.active { background: #1a7f37; color: #fff; }
+.tab:hover:not(.active) { color: #1a7f37; }
+
+.panel { display: none; width: 100%; max-width: 820px; }
+.panel.active { display: block; }
+
+/* Merge Replay */
+.ctrl { display: flex; gap: 9px; align-items: center; margin-bottom: 18px; }
+.btn { padding: 7px 16px; border-radius: 6px; border: 1px solid #d0d7de; background: #fff; color: #1f2328; font-size: 13px; cursor: pointer; font-family: inherit; transition: all 0.15s; }
+.btn:hover { border-color: #1a7f37; color: #1a7f37; }
+.btn.primary { background: #1a7f37; border-color: #1a7f37; color: #fff; }
+.si { font-size: 13px; color: #57606a; }
+
+.graph-wrap { background: #fff; border: 1px solid #d0d7de; border-radius: 7px; padding: 22px; margin-bottom: 14px; overflow-x: auto; }
+
+.desc {
+  background: #fff; border: 1px solid #d0d7de; border-radius: 6px;
+  padding: 12px 14px; font-size: 13px; color: #57606a; line-height: 1.65; min-height: 52px;
+}
+.desc strong { color: #1f2328; }
+.desc .g  { color: #15803d; font-weight: 700; }
+.desc .o  { color: #c2410c; }
+.desc .r  { color: #dc2626; }
+
+/* WAP flow */
+.wap-step { display: flex; gap: 14px; position: relative; }
+.wap-step:not(:last-child)::before { content:''; position:absolute; left:19px; top:42px; bottom:0; width:2px; background:#e6e8ec; }
+.wap-num { width:40px; height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:700; flex-shrink:0; position:relative; z-index:1; border:1px solid; }
+.wap-body { flex:1; padding-bottom:20px; }
+.wap-title { font-size:14px; font-weight:700; margin-bottom:4px; }
+.wap-detail { font-size:13px; color:#57606a; line-height:1.6; }
+.wap-code { margin-top:8px; background:#f6f8fa; border:1px solid #d0d7de; border-radius:5px; padding:8px 11px; font-family:'Menlo','Courier New',monospace; font-size:12px; color:#1f2328; white-space:pre; line-height:1.65; overflow-x:auto; }
+.wap-code .kw { color:#d44000; }
+.wap-code .cm { color:#8c959f; }
+.wap-code .hl { color:#15803d; }
+.wap-code .br { color:#c2410c; }
+
+.n-blue  { background:#eff6ff; border-color:#93c5fd; color:#1d4ed8; }
+.n-ora   { background:#fff7ed; border-color:#fed7aa; color:#c2410c; }
+.n-yel   { background:#fefce8; border-color:#fde68a; color:#a16207; }
+.n-grn   { background:#f0fdf4; border-color:#86efac; color:#15803d; }
+.n-red   { background:#fef2f2; border-color:#fca5a5; color:#dc2626; }
+
+.t-blue  { color:#1d4ed8; }
+.t-ora   { color:#c2410c; }
+.t-yel   { color:#a16207; }
+.t-grn   { color:#15803d; }
+.t-red   { color:#dc2626; }
+
+.outcome-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:20px; }
+.oc { border:1px solid; border-radius:6px; padding:12px; }
+.oc-ok   { background:#f0fdf4; border-color:#86efac; }
+.oc-ok h4   { color:#15803d; font-size:14px; margin-bottom:5px; }
+.oc-fail { background:#fef2f2; border-color:#fca5a5; }
+.oc-fail h4 { color:#dc2626; font-size:14px; margin-bottom:5px; }
+.oc p { font-size:13px; color:#57606a; line-height:1.6; }
+</style>
+</head>
+<body>
+
+<h2>图 5 · Merge Replay 与 WAP 发布流程</h2>
+<p class="cap">两个核心场景的可视化说明</p>
+
+<div class="tabs">
+  <button class="tab active" onclick="sw(0)">Merge Replay 原理</button>
+  <button class="tab" onclick="sw(1)">WAP 完整工作流</button>
+</div>
+
+<!-- Panel 0: Merge Replay -->
+<div class="panel active" id="p0">
+  <div class="ctrl">
+    <button class="btn primary" onclick="nxt()">下一步</button>
+    <button class="btn" onclick="rst()">重置</button>
+    <div class="si" id="si">共 5 步，点击开始</div>
+  </div>
+  <div class="graph-wrap">
+    <svg id="g" width="760" height="220" viewBox="0 0 760 220" style="display:block">
+      <defs>
+        <marker id="ga" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,1 L7,3.5 L0,6 Z" fill="#9ca3af"/></marker>
+        <marker id="gg" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,1 L7,3.5 L0,6 Z" fill="#16a34a"/></marker>
+        <marker id="go" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,1 L7,3.5 L0,6 Z" fill="#c2410c"/></marker>
+      </defs>
+      <!-- row labels -->
+      <text x="4" y="68" fill="#8c959f" font-size="13" font-family="system-ui">main</text>
+      <text x="4" y="158" fill="#8c959f" font-size="13" font-family="system-ui">experiment</text>
+
+      <!-- base nodes c1, c2 -->
+      <circle cx="100" cy="60" r="20" fill="#fff" stroke="#d0d7de" stroke-width="1.5"/>
+      <text x="100" y="64" text-anchor="middle" fill="#57606a" font-size="13" font-family="monospace">c1</text>
+      <circle cx="220" cy="60" r="20" fill="#fff" stroke="#d0d7de" stroke-width="1.5"/>
+      <text x="220" y="64" text-anchor="middle" fill="#57606a" font-size="13" font-family="monospace">c2</text>
+      <line x1="120" y1="60" x2="198" y2="60" stroke="#9ca3af" stroke-width="1.5" marker-end="url(#ga)"/>
+
+      <!-- fork line -->
+      <line id="fk" x1="220" y1="80" x2="220" y2="140" stroke="#9ca3af" stroke-width="1.2" stroke-dasharray="4,3" opacity="0"/>
+      <text id="fklb" x="228" y="112" fill="#8c959f" font-size="13" font-family="system-ui" opacity="0">fork</text>
+
+      <!-- experiment c3, c4 -->
+      <circle id="ec3" cx="340" cy="150" r="20" fill="#fff" stroke="#c2410c" stroke-width="1.5" opacity="0"/>
+      <text id="ec3t" x="340" y="154" text-anchor="middle" fill="#c2410c" font-size="13" font-family="monospace" opacity="0">c3</text>
+      <circle id="ec4" cx="460" cy="150" r="20" fill="#fff" stroke="#c2410c" stroke-width="1.5" opacity="0"/>
+      <text id="ec4t" x="460" y="154" text-anchor="middle" fill="#c2410c" font-size="13" font-family="monospace" opacity="0">c4</text>
+      <line id="ec2c3" x1="240" y1="150" x2="318" y2="150" stroke="#c2410c" stroke-width="1.5" marker-end="url(#go)" opacity="0"/>
+      <line id="ec3c4" x1="360" y1="150" x2="438" y2="150" stroke="#c2410c" stroke-width="1.5" marker-end="url(#go)" opacity="0"/>
+      <text id="ec3lb" x="340" y="195" text-anchor="middle" fill="#8c959f" font-size="13" font-family="system-ui" opacity="0">c3 的变更</text>
+      <text id="ec4lb" x="460" y="195" text-anchor="middle" fill="#8c959f" font-size="13" font-family="system-ui" opacity="0">c4 的变更</text>
+
+      <!-- experiment HEAD ref -->
+      <rect id="er" x="412" y="172" width="100" height="18" rx="3" fill="#fff7ed" stroke="#fed7aa" opacity="0"/>
+      <text id="ert" x="462" y="184" text-anchor="middle" fill="#c2410c" font-size="13" font-family="system-ui" opacity="0">experiment HEAD</text>
+
+      <!-- replay c3', c4' on main -->
+      <circle id="rc3" cx="340" cy="60" r="20" fill="#f0fdf4" stroke="#22c55e" stroke-width="2" opacity="0"/>
+      <text id="rc3t" x="340" y="64" text-anchor="middle" fill="#16a34a" font-size="13" font-family="monospace" opacity="0">c3'</text>
+      <circle id="rc4" cx="460" cy="60" r="20" fill="#f0fdf4" stroke="#22c55e" stroke-width="2" opacity="0"/>
+      <text id="rc4t" x="460" y="64" text-anchor="middle" fill="#16a34a" font-size="13" font-family="monospace" opacity="0">c4'</text>
+      <line id="mc2c3" x1="240" y1="60" x2="318" y2="60" stroke="#22c55e" stroke-width="2" marker-end="url(#gg)" opacity="0"/>
+      <line id="mc3c4" x1="360" y1="60" x2="438" y2="60" stroke="#22c55e" stroke-width="2" marker-end="url(#gg)" opacity="0"/>
+      <text id="rc3lb" x="340" y="88" text-anchor="middle" fill="#8c959f" font-size="13" font-family="system-ui" opacity="0">replay → c3'</text>
+      <text id="rc4lb" x="460" y="88" text-anchor="middle" fill="#8c959f" font-size="13" font-family="system-ui" opacity="0">replay → c4'</text>
+
+      <!-- main HEAD refs -->
+      <rect id="mr1" x="172" y="30" width="100" height="18" rx="3" fill="#eff6ff" stroke="#93c5fd" opacity="0"/>
+      <text id="mr1t" x="222" y="42" text-anchor="middle" fill="#1d4ed8" font-size="13" font-family="system-ui" opacity="0">main HEAD</text>
+      <rect id="mr2" x="412" y="30" width="100" height="18" rx="3" fill="#dcfce7" stroke="#86efac" opacity="0"/>
+      <text id="mr2t" x="462" y="42" text-anchor="middle" fill="#15803d" font-size="13" font-family="system-ui" opacity="0">main HEAD</text>
+    </svg>
+  </div>
+  <div class="desc" id="desc">
+    点击"下一步"查看 merge replay 的分步过程。<br>
+    场景：<strong>experiment</strong> branch 在 c2 之后提交了 c3 和 c4，现将其 merge 进 <strong>main</strong>。
+  </div>
+</div>
+
+<!-- Panel 1: WAP -->
+<div class="panel" id="p1">
+  <div style="display:flex;flex-direction:column;gap:0;width:100%;max-width:820px">
+
+    <div class="wap-step">
+      <div class="wap-num n-blue">1</div>
+      <div class="wap-body">
+        <div class="wap-title t-blue">创建隔离 Branch（零成本）</div>
+        <div class="wap-detail">
+          从 main 拉出 qa branch。该操作仅在 Nessie 的 refs 表中写入一行，不复制任何数据文件。
+          main 上的读者完全感知不到 qa 的存在。
+        </div>
+        <div class="wap-code"><span class="kw">CREATE</span> BRANCH <span class="br">qa</span> <span class="kw">FROM</span> main;
+<span class="cm">-- Nessie: refs.put("qa", refs["main"])</span>
+<span class="cm">-- 耗时 &lt; 1ms，无文件复制</span></div>
+      </div>
+    </div>
+
+    <div class="wap-step">
+      <div class="wap-num n-ora">2</div>
+      <div class="wap-body">
+        <div class="wap-title t-ora">ETL 向 qa Branch 写入数据</div>
+        <div class="wap-detail">
+          Spark / Flink 配置为写入 qa branch。写入期间 main 上的读者看到的仍是旧版本，两条历史线完全隔离。
+          可在 qa 上做多次提交，最终形成若干个新 commit。
+        </div>
+        <div class="wap-code"><span class="cm"># Spark 配置写入 qa branch</span>
+spark.conf.set(<span class="hl">"spark.sql.catalog.nessie.ref"</span>, <span class="br">"qa"</span>)
+<span class="cm"># 以下 DML 全部写入 qa，main 不受影响</span>
+spark.sql(<span class="hl">"INSERT INTO orders ..."</span>)
+spark.sql(<span class="hl">"UPDATE customers ..."</span>)</div>
+      </div>
+    </div>
+
+    <div class="wap-step">
+      <div class="wap-num n-yel">3</div>
+      <div class="wap-body">
+        <div class="wap-title t-yel">数据质量校验（Audit）</div>
+        <div class="wap-detail">
+          在 qa branch 上读取数据（对生产环境无影响），执行行数、空值率、业务规则等校验。
+          此阶段 qa branch 可反复修改并重新提交，直至通过校验。
+        </div>
+        <div class="wap-code"><span class="cm"># 读 qa branch 执行校验</span>
+df = spark.sql(<span class="hl">"""
+  SELECT COUNT(*) FROM orders
+  VERSION AS OF 'qa'
+"""</span>)
+assert df.first()[0] > 0
+<span class="cm"># 校验失败 → 直接 DROP qa</span></div>
+      </div>
+    </div>
+
+    <div class="wap-step">
+      <div class="wap-num n-grn">4a</div>
+      <div class="wap-body">
+        <div class="wap-title t-grn">校验通过 → Merge（原子发布）</div>
+        <div class="wap-detail">
+          将 qa branch 的所有变更原子地 merge 进 main。Nessie replay 机制在 main 上逐 commit 重放并执行 OCC 校验。
+          merge 完成的瞬间，所有读 main 的用户同时看到新版本（多表同步切换）。
+        </div>
+        <div class="wap-code"><span class="kw">MERGE</span> BRANCH <span class="br">qa</span> <span class="kw">INTO</span> main;
+<span class="cm">-- Nessie: replay qa 的所有 commit 到 main</span>
+<span class="cm">-- 单次 CAS 完成，多张表同时可见</span>
+<span class="kw">DROP</span> BRANCH <span class="br">qa</span>;</div>
+      </div>
+    </div>
+
+    <div class="wap-step">
+      <div class="wap-num n-red">4b</div>
+      <div class="wap-body">
+        <div class="wap-title t-red">校验失败 → 丢弃（无代价回退）</div>
+        <div class="wap-detail">
+          直接删除 qa branch。main 的数据和读者完全未受影响。
+          由于 qa 的变更从未写入 main，此处"回退"无需 UNDO 操作。
+          S3 上 qa branch 写入的文件由 GC 异步清理。
+        </div>
+        <div class="wap-code"><span class="cm"># 校验失败，丢弃 qa branch</span>
+<span class="kw">DROP</span> BRANCH <span class="br">qa</span>;
+<span class="cm">-- refs 表删除一行，操作完成</span>
+<span class="cm">-- main 状态无任何变化</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="outcome-grid">
+    <div class="oc oc-ok">
+      <h4>成功路径的关键性质</h4>
+      <p>
+        多表原子：merge 完成前，读者不会看到部分更新状态。<br>
+        全程隔离：ETL 写入期间 main 读者无感知。<br>
+        可重试：校验失败后修复数据，重新 merge，无副作用。
+      </p>
+    </div>
+    <div class="oc oc-fail">
+      <h4>传统方式无法做到的原因</h4>
+      <p>
+        无 branch：ETL 直写 main，脏数据立即可见，无法安全回滚。<br>
+        单表 branch：各表 fast-forward 顺序执行，存在中间不一致状态。<br>
+        无 catalog-wide commit：无法保证多张表在同一时刻切换。
+      </p>
+    </div>
+  </div>
+</div>
+
+<script>
+function sw(i){
+  document.querySelectorAll('.tab').forEach((t,j)=>t.classList.toggle('active',i===j));
+  document.querySelectorAll('.panel').forEach((p,j)=>p.classList.toggle('active',i===j));
+}
+
+let ms=0;
+const msi=['共 5 步，点击开始','Step 1：初始状态，experiment 有 c3、c4','Step 2：找到 fork point（c2）','Step 3：replay c3 到 main，生成 c3\'','Step 4：replay c4 到 main，生成 c4\'','完成：main HEAD 移至 c4\''];
+const msd=[
+  '初始状态：main 有 c1→c2，experiment 在 c2 基础上新增了 c3 和 c4。<span class="o">橙色节点</span>为 experiment 上的 commit。',
+  'Step 1：确定 <strong>fork point</strong>（分叉点 = c2）。replay 仅处理 c2 之后的 commit：c3 和 c4。',
+  'Step 2：<strong>replay c3</strong>。在 main 上创建 c3\'（parent = c2），并对 c3 涉及的每张表执行 OCC 校验。校验通过则写入 CommitObj。',
+  'Step 3：<strong>replay c4</strong>。在 main 上创建 c4\'（parent = c3\'），OCC 校验通过，merge 成功。',
+  '<span class="g">Merge 完成</span>：main HEAD 已移至 c4\'。所有 replay 的 commit 均为单 parent，历史保持线性结构。与 Git 不同：Nessie 不生成双亲 merge commit。'
+];
+
+function op(id,v){const e=document.getElementById(id);if(e)e.setAttribute('opacity',v);}
+function nxt(){
+  if(ms>=5)return;
+  document.getElementById('si').textContent=msi[ms+1]||msi[5];
+  document.getElementById('desc').innerHTML=msd[ms];
+  const acts=[
+    ()=>{['ec3','ec3t','ec4','ec4t','ec2c3','ec3c4','ec3lb','ec4lb','fk','fklb','er','ert','mr1','mr1t'].forEach(id=>op(id,'1'));},
+    ()=>{},
+    ()=>{['rc3','rc3t','mc2c3','rc3lb'].forEach(id=>op(id,'1'));},
+    ()=>{['rc4','rc4t','mc3c4','rc4lb'].forEach(id=>op(id,'1'));},
+    ()=>{op('mr2','1');op('mr2t','1');op('mr1','0');op('mr1t','0');}
+  ];
+  if(ms<acts.length)acts[ms]();
+  ms++;
+}
+function rst(){
+  ms=0;
+  document.getElementById('si').textContent='共 5 步，点击开始';
+  document.getElementById('desc').innerHTML='点击"下一步"查看 merge replay 的分步过程。<br>场景：<strong>experiment</strong> branch 在 c2 之后提交了 c3 和 c4，现将其 merge 进 <strong>main</strong>。';
+  ['ec3','ec3t','ec4','ec4t','ec2c3','ec3c4','ec3lb','ec4lb','fk','fklb','er','ert','mr1','mr1t','rc3','rc3t','rc4','rc4t','mc2c3','mc3c4','rc3lb','rc4lb','mr2','mr2t'].forEach(id=>op(id,'0'));
+}
+</script>
+</body>
+</html>

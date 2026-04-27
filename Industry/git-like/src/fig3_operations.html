@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>图3：Nessie Git-like 操作清单</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+  background: #f6f8fa; color: #1f2328;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 32px 20px 40px;
+}
+h2 { font-size: 18px; font-weight: 700; color: #24292f; margin-bottom: 4px; }
+.cap { font-size: 13px; color: #8c959f; margin-bottom: 20px; }
+
+.legend { display: flex; gap: 14px; margin-bottom: 18px; flex-wrap: wrap; }
+.leg { display: flex; align-items: center; gap: 5px; font-size: 13px; color: #57606a; }
+.leg-dot { width: 10px; height: 10px; border-radius: 2px; }
+
+.grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; width: 100%; max-width: 820px; margin-bottom: 20px; }
+
+.card {
+  border: 1px solid #d0d7de; border-radius: 7px; padding: 12px;
+  cursor: pointer; transition: all 0.18s; background: #fff;
+  border-top-width: 3px; position: relative;
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); transform: translateY(-1px); }
+.card.selected { box-shadow: 0 2px 12px rgba(0,0,0,0.12); }
+
+.card.op-req  { border-top-color: #22c55e; }
+.card.op-use  { border-top-color: #f59e0b; }
+.card.op-no   { border-top-color: #9ca3af; opacity: 0.65; }
+.card.selected.op-req { border-color: #22c55e; }
+.card.selected.op-use { border-color: #f59e0b; }
+
+.card-name { font-size: 15px; font-weight: 700; margin-bottom: 2px; }
+.op-req .card-name { color: #15803d; }
+.op-use .card-name { color: #92400e; }
+.op-no  .card-name { color: #6b7280; }
+
+.card-badge {
+  font-size: 12px; padding: 2px 8px; border-radius: 10px; font-weight: 600;
+  display: inline-block; margin-bottom: 5px;
+}
+.op-req .card-badge { background: #dcfce7; color: #15803d; }
+.op-use .card-badge { background: #fef3c7; color: #92400e; }
+.op-no  .card-badge { background: #f3f4f6; color: #6b7280; }
+
+.card-git  { font-size: 12px; color: #8c959f; margin-bottom: 4px; }
+.card-data { font-size: 13px; color: #57606a; line-height: 1.5; }
+
+/* detail panel */
+.detail {
+  display: none; width: 100%; max-width: 820px;
+  background: #fff; border: 1px solid #22c55e; border-radius: 7px;
+  padding: 18px 20px; animation: fd 0.2s ease;
+}
+.detail.show { display: block; }
+@keyframes fd { from { opacity: 0; transform: translateY(3px); } to { opacity:1; transform:translateY(0); } }
+
+.d-title { font-size: 15px; font-weight: 700; color: #15803d; margin-bottom: 3px; }
+.d-sub   { font-size: 13px; color: #57606a; margin-bottom: 14px; }
+
+.d-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.d-col h4 { font-size: 13px; color: #8c959f; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; font-weight: 600; }
+
+.code {
+  background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 5px;
+  padding: 10px 12px; font-family: 'Menlo','Courier New',monospace;
+  font-size: 13px; color: #1f2328; line-height: 1.7; white-space: pre; overflow-x: auto;
+}
+.code .kw  { color: #d44000; }
+.code .fn  { color: #6639ba; }
+.code .str { color: #0e7490; }
+.code .cm  { color: #8c959f; }
+.code .hl  { color: #15803d; font-weight: 700; }
+
+.d-list { list-style: none; }
+.d-list li { font-size: 13px; color: #57606a; padding: 5px 0; border-bottom: 1px solid #f0f1f3; line-height: 1.5; }
+.d-list li:last-child { border: none; }
+.d-list li strong { color: #1f2328; }
+</style>
+</head>
+<body>
+
+<h2>图 3 · Nessie 实现的 Git-like 操作清单</h2>
+<p class="cap">点击任意操作卡片查看实现原理</p>
+
+<div class="legend">
+  <div class="leg"><div class="leg-dot" style="background:#22c55e"></div>必要（最小集）</div>
+  <div class="leg"><div class="leg-dot" style="background:#f59e0b"></div>有用（可后置）</div>
+  <div class="leg"><div class="leg-dot" style="background:#9ca3af"></div>不适用 / 不做</div>
+</div>
+
+<div class="grid">
+  <div class="card op-req" onclick="sd('commit',this)">
+    <div class="card-name">commit</div>
+    <span class="card-badge">必要</span>
+    <div class="card-git">Git: 原子保存一组变更</div>
+    <div class="card-data">写 CommitObj → refs 表 CAS 翻指针。单次 commit 可含多张表。</div>
+  </div>
+  <div class="card op-req" onclick="sd('branch',this)">
+    <div class="card-name">branch</div>
+    <span class="card-badge">必要</span>
+    <div class="card-git">Git: 建独立工作线</div>
+    <div class="card-data">refs 表新增一行，指向同一 CommitObj。零成本，不复制任何对象。</div>
+  </div>
+  <div class="card op-req" onclick="sd('merge',this)">
+    <div class="card-name">merge</div>
+    <span class="card-badge">必要</span>
+    <div class="card-git">Git: 合并两条历史</div>
+    <div class="card-data">replay 模式：逐 commit 重放，每次执行 OCC 校验。无行级自动合并。</div>
+  </div>
+  <div class="card op-req" onclick="sd('log',this)">
+    <div class="card-name">log / history</div>
+    <span class="card-badge">必要</span>
+    <div class="card-git">Git: 查看变更历史</div>
+    <div class="card-data">沿 CommitObj.parent 字段单链遍历，时间复杂度 O(depth)。</div>
+  </div>
+  <div class="card op-req" onclick="sd('diff',this)">
+    <div class="card-name">diff</div>
+    <span class="card-badge">必要</span>
+    <div class="card-git">Git: 对比两版本差异</div>
+    <div class="card-data">比较两个 ref 的 StoreIndex，结果为 ContentKey（表名）级别变化，非行级。</div>
+  </div>
+  <div class="card op-req" onclick="sd('revert',this)">
+    <div class="card-name">revert / reset</div>
+    <span class="card-badge">必要</span>
+    <div class="card-git">Git: 回退到历史版本</div>
+    <div class="card-data">硬重置：refs.cas(branch, new=旧 commit_id)；或提交一次逆操作 commit。</div>
+  </div>
+  <div class="card op-use" onclick="sd('tag',this)">
+    <div class="card-name">tag</div>
+    <span class="card-badge">有用</span>
+    <div class="card-git">Git: 不可变版本标签</div>
+    <div class="card-data">refs 表新增一行，但禁止后续 CAS 修改。一次写入，永久固定。</div>
+  </div>
+  <div class="card op-use" onclick="sd('transplant',this)">
+    <div class="card-name">cherry-pick / transplant</div>
+    <span class="card-badge">有用</span>
+    <div class="card-git">Git: 移植单个 commit</div>
+    <div class="card-data">从任意 ref 挑选指定 commit 序列，replay 到目标 branch。低频操作。</div>
+  </div>
+  <div class="card op-no" onclick="sd('rebase',this)">
+    <div class="card-name">rebase / 行级 merge</div>
+    <span class="card-badge">不做</span>
+    <div class="card-git">Git: 重写历史 / 合并文本</div>
+    <div class="card-data">数据不应被重写；行级 merge 属于引擎职责，不在 Catalog 层实现。</div>
+  </div>
+</div>
+
+<div class="detail" id="detail">
+  <div class="d-title" id="d-title"></div>
+  <div class="d-sub"   id="d-sub"></div>
+  <div class="d-cols">
+    <div class="d-col">
+      <h4>底层实现</h4>
+      <div class="code" id="d-code"></div>
+    </div>
+    <div class="d-col">
+      <h4>关键性质</h4>
+      <ul class="d-list" id="d-list"></ul>
+    </div>
+  </div>
+</div>
+
+<script>
+const data = {
+  commit: {
+    title: 'commit — 多表原子提交',
+    sub: 'Nessie 最核心的操作。一次 commit 可以原子地变更多张表的 metadata 指针。',
+    code: `<span class="cm"># 简化伪代码</span>
+<span class="kw">def</span> <span class="fn">commit</span>(branch, ops, expected_head):
+  <span class="kw">for</span> attempt <span class="kw">in</span> range(retries):
+    head = refs[branch]
+    <span class="kw">for</span> op <span class="kw">in</span> ops:
+      validate(op.expectedContent)  <span class="cm"># OCC 校验</span>
+
+    commit_obj = CommitObj(parent=head, changes=ops)
+    objs.put(<span class="hl">hash(commit_obj)</span>, commit_obj)  <span class="cm"># 幂等写</span>
+
+    ok = refs.<span class="hl">cas</span>(branch, expected=head,
+                  new=hash(commit_obj))
+    <span class="kw">if</span> ok: <span class="kw">return</span>`,
+    list: [
+      '<strong>原子性来源</strong>：CommitObj 同时记录所有表的新指针，单次 CAS 完成翻转。',
+      '<strong>OCC 校验</strong>：每个 Put 操作携带 expectedContent（含 snapshotId），服务端比对后方可继续。',
+      '<strong>幂等写</strong>：objs.put 可安全重试，不影响状态。',
+      '<strong>冲突粒度</strong>：ContentKey（表名）级别，修改不同表的两次 commit 不产生冲突。',
+    ]
+  },
+  branch: {
+    title: 'branch — 零成本分支',
+    sub: '"零成本"是核心性质：创建分支不复制任何数据文件或 CommitObj，只是在 refs 表中写入一行。',
+    code: `<span class="cm"># 创建分支</span>
+<span class="kw">def</span> <span class="fn">create_branch</span>(name, source):
+  head = refs[source]
+  refs.<span class="hl">put</span>(name, head)
+  <span class="cm"># 不复制任何 CommitObj</span>
+
+<span class="cm"># 删除分支</span>
+<span class="kw">def</span> <span class="fn">delete_branch</span>(name):
+  <span class="kw">del</span> refs[name]
+  <span class="cm"># objs 中的孤儿对象由 GC 清理</span>`,
+    list: [
+      '<strong>refs 表新增一行</strong>：指向与源 branch 相同的 CommitObj，两者共享历史树。',
+      '<strong>隔离性</strong>：后续向 experiment commit 只修改 refs["experiment"]，不影响 refs["main"]。',
+      '<strong>删除零成本</strong>：删除分支仅删 refs 中的一行；相关 CommitObj 成为孤儿，由 GC 清理。',
+      '<strong>数量无约束</strong>：每个 branch 仅占 refs 表几十字节，可维护数千条并行 branch。',
+    ]
+  },
+  merge: {
+    title: 'merge — replay 模式合并',
+    sub: 'Nessie 不产生双亲 merge commit（与 Git 不同），而是将源 branch 的每个 commit 逐一在目标 branch 上重放。',
+    code: `<span class="cm"># merge experiment → main</span>
+<span class="kw">def</span> <span class="fn">merge</span>(src, dst):
+  fork = find_common_ancestor(src, dst)
+  commits = get_commits_since(src, fork)
+
+  <span class="kw">for</span> c <span class="kw">in</span> commits:
+    <span class="fn">commit</span>(
+      branch=dst,
+      ops=c.changes,
+      expected=current_dst   <span class="cm"># OCC 校验</span>
+    )
+    <span class="cm"># OCC 失败 → 冲突（同表被改）</span>`,
+    list: [
+      '<strong>replay 而非 merge commit</strong>：所有 commit 保持单 parent，历史链为线性结构，便于遍历与索引。',
+      '<strong>冲突检测</strong>：replay 时若目标 branch 上同一张表已被修改，OCC 校验失败，报 conflict。',
+      '<strong>冲突粒度</strong>：ContentKey（表名）级别，不涉及行级冲突。行级冲突由引擎处理。',
+      '<strong>与 Git 的差异</strong>：Git 生成双亲 merge commit，保留历史汇合信息；Nessie 将历史线性化。',
+    ]
+  },
+  log: {
+    title: 'log / history — 沿 parent 指针遍历',
+    sub: 'commit log 通过沿 CommitObj 的 parent 字段逐级回溯实现。',
+    code: `<span class="kw">def</span> <span class="fn">log</span>(branch, limit):
+  head_id = refs[branch]
+  result, cur = [], objs[head_id]
+
+  <span class="kw">while</span> cur <span class="kw">and</span> len(result) < limit:
+    result.append({
+      <span class="str">"id"</span>:      cur.id,
+      <span class="str">"time"</span>:    cur.created,
+      <span class="str">"author"</span>:  cur.author,
+      <span class="str">"changes"</span>: cur.changes
+    })
+    cur = objs[cur.<span class="hl">parent</span>]
+  <span class="kw">return</span> result`,
+    list: [
+      '<strong>单链遍历</strong>：所有 commit 单 parent，遍历为 O(n) 链表迭代。',
+      '<strong>三种定位坐标</strong>：commit hash、branch / tag 名、时间戳，均支持 time travel 查询。',
+      '<strong>审计用途</strong>：每个 commit 记录 author、timestamp 及变更的表集合，供 DBA 定位事故。',
+      '<strong>分页</strong>：大型 catalog 的 log 较长，API 支持 pageToken 分页获取。',
+    ]
+  },
+  diff: {
+    title: 'diff — 两个 ref 的变更比较',
+    sub: '返回"从 refA 到 refB，哪些表名（ContentKey）的 metadata 指针发生了变化"。不涉及行级 diff。',
+    code: `<span class="kw">def</span> <span class="fn">diff</span>(refA, refB):
+  indexA = build_index(refs[refA])
+  indexB = build_index(refs[refB])
+
+  result = []
+  <span class="kw">for</span> key <span class="kw">in</span> union(indexA.keys, indexB.keys):
+    a, b = indexA.get(key), indexB.get(key)
+    <span class="kw">if</span> a != b:
+      result.append({
+        <span class="str">"key"</span>:  key,    <span class="cm"># 表名</span>
+        <span class="str">"from"</span>: a,      <span class="cm"># 旧 metadata 路径</span>
+        <span class="str">"to"</span>:   b       <span class="cm"># 新 metadata 路径</span>
+      })
+  <span class="kw">return</span> result`,
+    list: [
+      '<strong>粒度</strong>：ContentKey（表名）级别的变化。无法直接获取"某张表内哪行数据变了"。',
+      '<strong>行级 diff</strong>：需通过 Iceberg time travel 在引擎层计算，不属于 Catalog 职责。',
+      '<strong>StoreIndex</strong>：Nessie 内部双层索引（incremental + reference），用于加速 diff 查询。',
+      '<strong>典型用途</strong>：WAP merge 前确认 experiment 修改了哪些表；事故排查时定位哪个 commit 改动了目标表。',
+    ]
+  },
+  revert: {
+    title: 'revert / reset — 回退到历史状态',
+    sub: '两种方式：硬重置（直接将 branch HEAD 指回历史 commit）或软 revert（提交一次逆操作）。',
+    code: `<span class="cm"># 方式一：硬重置（适用于事故恢复）</span>
+<span class="kw">def</span> <span class="fn">reset_to</span>(branch, target_commit_id):
+  refs.<span class="hl">cas</span>(branch,
+    expected=refs[branch],
+    new=target_commit_id)
+<span class="cm"># 被跳过的 commit 成为孤儿对象</span>
+
+<span class="cm"># 方式二：逆操作 commit</span>
+<span class="kw">def</span> <span class="fn">revert_commit</span>(branch, bad_commit):
+  inverse_ops = invert(bad_commit.changes)
+  <span class="fn">commit</span>(branch, inverse_ops, ...)
+<span class="cm"># 历史保留，新增一次"撤销"commit</span>`,
+    list: [
+      '<strong>硬重置</strong>：refs.cas 直接将 branch HEAD 指回目标 commit id，单次 CAS，原子完成。',
+      '<strong>软 revert</strong>：写入新 commit，其变更为目标 commit 的逆操作；历史链完整保留。',
+      '<strong>事故场景</strong>：ETL 误删生产表 → 通过 log 找到事故前的 commit hash → 执行 reset 回退。',
+      '<strong>孤儿清理</strong>：硬重置后，被跳过的 CommitObj 成为孤儿，由 GC 定期识别并清除。',
+    ]
+  },
+  tag: {
+    title: 'tag — 不可变版本标签',
+    sub: '与 branch 的区别：tag 创建后不可移动，永久指向创建时的那个 commit。',
+    code: `<span class="kw">def</span> <span class="fn">create_tag</span>(name, commit_id):
+  refs.put(name, commit_id)
+  mark_as_immutable(name)
+  <span class="cm"># 此后任何 CAS 请求将被拒绝</span>
+
+<span class="cm"># 典型用法</span>
+create_tag(<span class="str">"Q1-2026"</span>, refs[<span class="str">"main"</span>])
+<span class="cm"># 永久标记该时点的数据状态</span>`,
+    list: [
+      '<strong>底层</strong>：refs 表新增一行，并标记为 immutable，后续 CAS 请求被服务端拒绝。',
+      '<strong>典型用途</strong>：季度报表、模型训练数据集、合规审计快照——需要永久可复现的版本。',
+      '<strong>与 branch 的区别</strong>：branch 随 commit 推进（可变 HEAD）；tag 固定（不可变指针）。',
+    ]
+  },
+  transplant: {
+    title: 'cherry-pick / transplant — 跨分支移植',
+    sub: '将指定的 commit（或 commit 序列）从一个 branch 搬至另一个 branch，不合并完整历史。',
+    code: `<span class="kw">def</span> <span class="fn">transplant</span>(src_commits, dst):
+  <span class="kw">for</span> c <span class="kw">in</span> src_commits:
+    <span class="fn">commit</span>(
+      branch=dst,
+      ops=c.changes,
+      expected=current_dst
+    )
+<span class="cm"># 与 merge 的区别：</span>
+<span class="cm"># merge 重放分叉点后所有 commit</span>
+<span class="cm"># transplant 只选指定的 commit</span>`,
+    list: [
+      '<strong>与 merge 的区别</strong>：merge 合并整条 branch；transplant 只取指定 commit。',
+      '<strong>典型场景</strong>：experiment 有 5 个 commit，仅其中一个是 bug 修复，将该 commit 单独搬回 main。',
+      '<strong>低频操作</strong>：日常 DataOps 以 commit + merge 为主，transplant 用于特殊场景。',
+    ]
+  },
+  rebase: {
+    title: 'rebase / 行级自动 merge — 不实现',
+    sub: '这两类操作在 Git 中重要，但不应在 Catalog 层引入。',
+    code: `<span class="cm"># rebase：重写历史</span>
+<span class="cm"># 原因：数据文件不可修改</span>
+<span class="cm"># S3 文件一旦写入即不可变</span>
+<span class="cm"># "重写历史"在语义上无意义</span>
+
+<span class="cm"># 行级自动 merge</span>
+<span class="cm"># 原因1：Catalog 只能看到 metadata pointer</span>
+<span class="cm">#        无法感知行级数据内容</span>
+<span class="cm"># 原因2：数据冲突的解决规则是业务逻辑</span>
+<span class="cm">#        不能由技术层自动决定</span>`,
+    list: [
+      '<strong>rebase 不适用</strong>：代码历史可以整理，但数据历史不应篡改（合规要求）。',
+      '<strong>行级 merge 不属于 Catalog</strong>：Catalog 只持有 metadata pointer，无法读取行数据。',
+      '<strong>行级 merge 属于引擎</strong>：Spark MERGE INTO / Flink CDC 在引擎层处理行冲突，执行业务规则。',
+      '<strong>Nessie 的边界</strong>：冲突检测止于 ContentKey（表名）级别，行级冲突明确不处理。',
+    ]
+  }
+};
+
+function sd(key, el) {
+  const d = data[key];
+  document.getElementById('d-title').textContent = d.title;
+  document.getElementById('d-sub').textContent = d.sub;
+  document.getElementById('d-code').innerHTML = d.code;
+  document.getElementById('d-list').innerHTML = d.list.map(l => `<li>${l}</li>`).join('');
+  const panel = document.getElementById('detail');
+  panel.classList.add('show');
+  panel.scrollIntoView({ behavior:'smooth', block:'nearest' });
+  document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+  el.classList.add('selected');
+}
+</script>
+</body>
+</html>

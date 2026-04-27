@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>图4：并发 Commit 冲突时间线</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+  background: #f6f8fa; color: #1f2328;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 32px 20px 40px;
+}
+h2 { font-size: 18px; font-weight: 700; color: #24292f; margin-bottom: 4px; }
+.cap { font-size: 13px; color: #8c959f; margin-bottom: 22px; }
+
+.ctrl { display: flex; gap: 10px; align-items: center; margin-bottom: 20px; }
+.btn {
+  padding: 6px 15px; border-radius: 6px;
+  border: 1px solid #d0d7de; background: #fff;
+  color: #1f2328; font-size: 13px; cursor: pointer; font-family: inherit;
+  transition: all 0.15s;
+}
+.btn:hover { border-color: #1a7f37; color: #1a7f37; }
+.btn.primary { background: #1a7f37; border-color: #1a7f37; color: #fff; }
+.btn.primary:hover { background: #22863a; }
+.step-info { font-size: 13px; color: #57606a; }
+
+.main {
+  width: 100%; max-width: 860px;
+  display: grid; grid-template-columns: 1fr 1fr 1fr;
+  gap: 1px; background: #d0d7de;
+  border: 1px solid #d0d7de; border-radius: 8px; overflow: hidden;
+  margin-bottom: 18px;
+}
+.col-hd {
+  background: #f6f8fa; padding: 9px 11px;
+  font-size: 13px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+}
+.col-hd.a  { color: #1d4ed8; }
+.col-hd.ns { color: #15803d; text-align: center; }
+.col-hd.b  { color: #c2410c; text-align: right; }
+
+.col-body { background: #fff; padding: 11px; min-height: 380px; }
+
+/* events */
+.ev { margin-bottom: 10px; opacity: 0; transform: translateY(5px); transition: opacity 0.28s, transform 0.28s; pointer-events: none; }
+.ev.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+.ev-t { font-size: 12px; color: #8c959f; margin-bottom: 2px; }
+.ev-box {
+  border-radius: 5px; padding: 7px 9px;
+  font-size: 13px; line-height: 1.5; border: 1px solid;
+}
+.ev-a    { background: #eff6ff; border-color: #bfdbfe; }
+.ev-a .ev-ttl    { color: #1d4ed8; font-weight: 700; margin-bottom: 2px; }
+.ev-b    { background: #fff7ed; border-color: #fed7aa; }
+.ev-b .ev-ttl    { color: #c2410c; font-weight: 700; margin-bottom: 2px; }
+.ev-ok   { background: #f0fdf4; border-color: #86efac; border-width: 2px; }
+.ev-ok .ev-ttl   { color: #15803d; font-weight: 700; margin-bottom: 2px; }
+.ev-fail { background: #fef2f2; border-color: #fca5a5; border-width: 2px; }
+.ev-fail .ev-ttl { color: #dc2626; font-weight: 700; margin-bottom: 2px; }
+.ev-info { background: #f6f8fa; border-color: #d0d7de; }
+.ev-info .ev-ttl { color: #57606a; font-weight: 700; margin-bottom: 2px; }
+
+/* state panel */
+.sp {
+  background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 5px;
+  padding: 9px 10px; margin-bottom: 8px; font-size: 13px;
+}
+.sp-lbl { font-size: 12px; color: #8c959f; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+.sp-row { display: flex; justify-content: space-between; padding: 1px 0; }
+.sp-k { color: #57606a; }
+.sp-v { color: #a16207; font-weight: 700; }
+.sp-v.changed { color: #15803d; animation: fl 0.45s; }
+.sp-v.orphan  { color: #dc2626; text-decoration: line-through; }
+@keyframes fl { 0%,100%{opacity:1} 50%{opacity:0.25} }
+
+/* insight */
+.insight {
+  width: 100%; max-width: 860px;
+  padding: 12px 14px; background: #f0fdf4;
+  border-left: 3px solid #22c55e; border-radius: 0 5px 5px 0;
+  font-size: 13px; color: #57606a; line-height: 1.65;
+  opacity: 0; transition: opacity 0.35s;
+}
+.insight.show { opacity: 1; }
+.insight strong { color: #15803d; }
+.insight .red   { color: #dc2626; }
+</style>
+</head>
+<body>
+
+<h2>图 4 · 并发 Commit 冲突时间线</h2>
+<p class="cap">Writer A 和 Writer B 同时向 main branch 提交，演示 OCC + CAS 的完整冲突解决过程</p>
+
+<div class="ctrl">
+  <button class="btn primary" onclick="next()">下一步</button>
+  <button class="btn" onclick="reset()">重置</button>
+  <div class="step-info" id="si">点击"下一步"开始（共 6 步）</div>
+</div>
+
+<div class="main">
+  <div class="col-hd a">Writer A（Spark Job）</div>
+  <div class="col-hd ns">Nessie 服务器状态</div>
+  <div class="col-hd b">Writer B（独立 Spark Job）</div>
+
+  <!-- A -->
+  <div class="col-body" id="ca">
+    <div class="ev show" id="a0">
+      <div class="ev-box ev-info">
+        <div class="ev-ttl">提交目标：</div>
+        修改 <code>sales.orders</code>（v11）<br>
+        + <code>sales.customers</code>（v5）<br>
+        两张表同时提交
+      </div>
+    </div>
+    <div class="ev" id="a1">
+      <div class="ev-t">t=1</div>
+      <div class="ev-box ev-a"><div class="ev-ttl">读 main HEAD</div>得到 c0</div>
+    </div>
+    <div class="ev" id="a2">
+      <div class="ev-box ev-a"><div class="ev-ttl">写 S3 文件</div>v11.json (orders)<br>v5.json (customers)</div>
+    </div>
+    <div class="ev" id="a3">
+      <div class="ev-box ev-a"><div class="ev-ttl">写 objs（幂等）</div>CommitObj(commit_A)<br>ContentValueObj(orders→v11)<br>ContentValueObj(customers→v5)</div>
+    </div>
+    <div class="ev" id="a4">
+      <div class="ev-box ev-ok">
+        <div class="ev-ttl">CAS 成功</div>
+        refs.cas("main",<br>&nbsp;&nbsp;expected=c0,<br>&nbsp;&nbsp;new=commit_A)<br>
+        <strong>返回 OK</strong>
+      </div>
+    </div>
+  </div>
+
+  <!-- Nessie -->
+  <div class="col-body" style="text-align:center" id="cn">
+    <div class="sp">
+      <div class="sp-lbl">refs 表</div>
+      <div class="sp-row"><span class="sp-k">main</span><span class="sp-v" id="rm">→ c0</span></div>
+    </div>
+    <div class="sp">
+      <div class="sp-lbl">objs 表（不可变）</div>
+      <div id="ol" style="font-size:13px;color:#57606a;line-height:1.6;text-align:left">CommitObj(c0)</div>
+    </div>
+    <div class="sp">
+      <div class="sp-lbl">orders 当前状态</div>
+      <div class="sp-row"><span class="sp-k">metadata</span><span class="sp-v" id="om">v10.json</span></div>
+      <div class="sp-row"><span class="sp-k">snapshotId</span><span class="sp-v" id="os">100</span></div>
+    </div>
+  </div>
+
+  <!-- B -->
+  <div class="col-body" id="cb" style="text-align:right">
+    <div class="ev show" id="b0">
+      <div class="ev-box ev-info">
+        <div class="ev-ttl" style="text-align:right">提交目标：</div>
+        <div style="text-align:right">修改 <code>sales.orders</code>（v12）<br>独立提交，不知道 A 的存在</div>
+      </div>
+    </div>
+    <div class="ev" id="b1">
+      <div class="ev-t" style="text-align:right">t=2</div>
+      <div class="ev-box ev-b"><div class="ev-ttl" style="text-align:right">读 main HEAD</div><div style="text-align:right">得到 c0（A 尚未 CAS 成功）</div></div>
+    </div>
+    <div class="ev" id="b2">
+      <div class="ev-box ev-b"><div class="ev-ttl" style="text-align:right">写 S3 文件</div><div style="text-align:right">v12.json (orders)</div></div>
+    </div>
+    <div class="ev" id="b3">
+      <div class="ev-box ev-b"><div class="ev-ttl" style="text-align:right">写 objs（幂等）</div><div style="text-align:right">CommitObj(commit_B)<br>ContentValueObj(orders→v12)</div></div>
+    </div>
+    <div class="ev" id="b4">
+      <div class="ev-box ev-fail">
+        <div class="ev-ttl" style="text-align:right">CAS 失败</div>
+        <div style="text-align:right">refs.cas("main",<br>&nbsp;&nbsp;expected=c0,<br>&nbsp;&nbsp;new=commit_B)<br>main 已为 commit_A ≠ c0</div>
+      </div>
+    </div>
+    <div class="ev" id="b5">
+      <div class="ev-box ev-fail">
+        <div class="ev-ttl" style="text-align:right">OCC 校验失败</div>
+        <div style="text-align:right">重试：读 main → commit_A<br>orders.snapshotId = <strong style="color:#15803d">101</strong><br>B 期望 <strong style="color:#dc2626">100</strong><br>→ NessieConflictException</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="insight" id="ins">
+  <strong>三个关键观察：</strong><br>
+  1. A 和 B 的"写 S3 + 写 objs"操作完全不互斥，可真正并发执行——竞争点仅在 CAS 那一步。<br>
+  2. 冲突检测分为两层：CAS 层（branch HEAD 是否仍为 c0）与 OCC 层（snapshotId 是否仍为 100），双重保障。<br>
+  3. commit_B 和 v12.json 已写入但无 ref 引用，成为<span class="red">孤儿对象</span>，等待 GC 清理——数据正确性不受影响。
+</div>
+
+<script>
+let s = 0;
+const labels = ['初始状态','t=1：Writer A 读 HEAD 并写文件','t=2：Writer B 并发读到 c0','t=3：A 的 CAS 成功','t=4：B 的 CAS 失败','t=5：B 重试后 OCC 校验失败'];
+
+function upd(rm,ol,om,os,rc,oc) {
+  const re = document.getElementById('rm'); re.textContent=rm; re.className='sp-v'+(rc?' changed':'');
+  document.getElementById('ol').innerHTML=ol;
+  const oe=document.getElementById('om'); oe.textContent=om; oe.className='sp-v'+(oc?' changed':'');
+  const se=document.getElementById('os'); se.textContent=os; se.className='sp-v'+(oc?' changed':'');
+}
+function show(id){const e=document.getElementById(id);if(e)e.classList.add('show');}
+
+function next(){
+  s=Math.min(s+1,6);
+  document.getElementById('si').textContent=`步骤 ${s} / 6：${labels[s]||labels[6]}`;
+  if(s>=1){show('a1');}
+  if(s>=2){show('b1');show('a2');show('b2');show('a3');show('b3');
+    upd('→ c0','CommitObj(c0)<br>CommitObj(commit_A)<br>ContentValueObj(orders→v11)<br>ContentValueObj(customers→v5)<br><span style="color:#dc2626">CommitObj(commit_B) 孤儿<br>ContentValueObj(orders→v12) 孤儿</span>','v10.json','100',false,false);}
+  if(s>=3){show('a4');upd('→ commit_A','CommitObj(c0)<br>CommitObj(commit_A)  ← HEAD<br>ContentValueObj(orders→v11)<br>ContentValueObj(customers→v5)<br><span style="color:#dc2626">CommitObj(commit_B) 孤儿<br>ContentValueObj(orders→v12) 孤儿</span>','v11.json','101',true,true);}
+  if(s>=4){show('b4');}
+  if(s>=5){show('b5');}
+  if(s>=6){document.getElementById('ins').classList.add('show');}
+}
+function reset(){
+  s=0;document.getElementById('si').textContent='点击"下一步"开始（共 6 步）';
+  ['a1','a2','a3','a4','b1','b2','b3','b4','b5'].forEach(id=>{const e=document.getElementById(id);if(e)e.classList.remove('show');});
+  upd('→ c0','CommitObj(c0)','v10.json','100',false,false);
+  document.getElementById('ins').classList.remove('show');
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>图2：不可变对象、可变指针与指针翻转</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+  background: #f6f8fa; color: #1f2328;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 28px 20px 36px;
+}
+h2 { font-size: 17px; font-weight: 600; color: #57606a; margin-bottom: 5px; }
+.cap { font-size: 13px; color: #8c959f; margin-bottom: 20px; }
+
+.nav { display: flex; gap: 6px; margin-bottom: 18px; flex-wrap: wrap; justify-content: center; }
+.nav-btn {
+  padding: 7px 16px; border-radius: 20px;
+  border: 1px solid #d0d7de; background: #fff;
+  color: #57606a; font-size: 13px; cursor: pointer; font-family: inherit; transition: all 0.18s;
+}
+.nav-btn.active { background: #1a7f37; border-color: #1a7f37; color: #fff; }
+.nav-btn:hover:not(.active) { border-color: #1a7f37; color: #1a7f37; }
+
+.canvas {
+  width: 100%; max-width: 820px;
+  background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 24px;
+}
+.stage { display: none; }
+.stage.active { display: block; }
+
+.stage-title { font-size: 15px; font-weight: 700; color: #1a7f37; margin-bottom: 5px; }
+.stage-desc  { font-size: 13px; color: #57606a; margin-bottom: 20px; line-height: 1.65; }
+
+.obj-layout { display: flex; gap: 18px; align-items: flex-start; }
+.col { display: flex; flex-direction: column; gap: 10px; }
+.col-label { font-size: 12px; color: #8c959f; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 3px; font-weight: 600; }
+
+.box { border: 1px solid; border-radius: 6px; padding: 11px 14px; transition: all 0.2s; }
+.box-title { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+.box-body  { font-size: 14px; color: #57606a; line-height: 1.6; }
+.box-note  { font-size: 12px; color: #8c959f; margin-top: 4px; }
+
+.box-immut { background: #eff6ff; border-color: #bfdbfe; }
+.box-immut .box-title { color: #1d4ed8; }
+.box-mut   { background: #fff7ed; border-color: #fed7aa; }
+.box-mut .box-title   { color: #c2410c; }
+.box-hi    { background: #f0fdf4; border-color: #86efac; }
+.box-hi .box-title    { color: #15803d; }
+.box-new   { background: #f0fdf4; border-color: #22c55e; border-width: 2px; animation: pop 0.35s ease; }
+.box-new .box-title   { color: #15803d; }
+@keyframes pop { from { transform: scale(0.88); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.box-dim   { opacity: 0.35; }
+.box-ok    { background: #f0fdf4; border-color: #86efac; border-width: 2px; }
+.box-ok .box-title    { color: #15803d; }
+.box-warn  { background: #fef3c7; border-color: #fcd34d; }
+.box-warn .box-title  { color: #92400e; }
+
+.arrow-mid { display: flex; align-items: center; padding-top: 36px; color: #8c959f; font-size: 22px; }
+
+.insight {
+  margin-top: 18px; padding: 13px 15px;
+  background: #f0fdf4; border-left: 3px solid #22c55e; border-radius: 0 6px 6px 0;
+  font-size: 13px; color: #57606a; line-height: 1.7;
+}
+.insight strong { color: #15803d; }
+
+.cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.cmp-col h4 { font-size: 13px; color: #8c959f; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px; font-weight: 600; }
+.cmp-col .box { margin-bottom: 8px; }
+.ok-label  { font-size: 14px; color: #15803d; font-weight: 700; text-align: center; padding: 4px; }
+.fail-label{ font-size: 14px; color: #dc2626; font-weight: 700; text-align: center; padding: 4px; }
+</style>
+</head>
+<body>
+
+<h2>图 2 · 不可变对象、可变指针与指针翻转</h2>
+<p class="cap">从单表 Iceberg CAS 到 Nessie refs / objs 模型的完整原理</p>
+
+<div class="nav">
+  <button class="nav-btn active" onclick="show(0)">① 初始状态</button>
+  <button class="nav-btn" onclick="show(1)">② 写入发生</button>
+  <button class="nav-btn" onclick="show(2)">③ 指针翻转</button>
+  <button class="nav-btn" onclick="show(3)">④ Nessie 的版本</button>
+  <button class="nav-btn" onclick="show(4)">⑤ 幂等写的意义</button>
+</div>
+
+<div class="canvas">
+
+<!-- Stage 0 -->
+<div class="stage active" id="s0">
+  <div class="stage-title">① 初始状态：Catalog 持有唯一的可变指针</div>
+  <div class="stage-desc">表 <code>sales.orders</code> 在对象存储中存在多个历史版本的 metadata.json，但 Catalog 只记录"当前哪个版本有效"。引擎查询时向 Catalog 询问该表路径，Catalog 返回当前有效的 metadata.json 路径。</div>
+  <div class="obj-layout">
+    <div class="col" style="min-width:200px">
+      <div class="col-label">Catalog（可变部分）</div>
+      <div class="box box-mut">
+        <div class="box-title">指针（可变）</div>
+        <div class="box-body">sales.orders<br><strong style="color:#c2410c">→ v2-abc.json</strong></div>
+        <div class="box-note">此行随时可能被 CAS 更新</div>
+      </div>
+    </div>
+    <div class="arrow-mid">→</div>
+    <div class="col" style="flex:1">
+      <div class="col-label">对象存储 S3（不可变部分）</div>
+      <div class="box box-hi">
+        <div class="box-title">v2-abc.json（当前有效）</div>
+        <div class="box-body">snapshotId: 100 · schemaId: 2<br>→ manifest-list-2.avro</div>
+      </div>
+      <div class="box box-immut box-dim">
+        <div class="box-title">v1-def.json（历史版本）</div>
+        <div class="box-body">snapshotId: 99 · → manifest-list-1.avro</div>
+      </div>
+      <div class="box box-immut box-dim">
+        <div class="box-title">v0-xyz.json（历史版本）</div>
+        <div class="box-body">snapshotId: 98 · → ...</div>
+      </div>
+    </div>
+  </div>
+  <div class="insight"><strong>不可变对象</strong>：每个 metadata.json 一旦写入 S3 就不再修改。v1、v2 版本均持续保存，供 time travel 和 GC 使用。<br><strong>可变指针</strong>：Catalog 中那一行 <code>sales.orders → v2.json</code> 是系统中唯一"会变"的部分。</div>
+</div>
+
+<!-- Stage 1 -->
+<div class="stage" id="s1">
+  <div class="stage-title">② 写入发生：引擎先写文件，再请求翻指针</div>
+  <div class="stage-desc">Spark 执行写操作。它先在 S3 生成新的 Parquet 文件及对应的新 metadata.json（v3），再向 Catalog 发起 CAS 请求："请将指针从 v2 替换为 v3"。顺序关键：先写文件，后翻指针。</div>
+  <div class="obj-layout">
+    <div class="col" style="min-width:200px">
+      <div class="col-label">Catalog（此时尚未更新）</div>
+      <div class="box box-mut">
+        <div class="box-title">指针（仍指向 v2）</div>
+        <div class="box-body">sales.orders<br><strong style="color:#c2410c">→ v2-abc.json</strong></div>
+      </div>
+      <div class="box box-warn" style="margin-top:10px">
+        <div class="box-title">等待中</div>
+        <div class="box-body">Spark 正在请求<br>CAS: v2 → v3</div>
+      </div>
+    </div>
+    <div class="arrow-mid">→</div>
+    <div class="col" style="flex:1">
+      <div class="col-label">对象存储 S3</div>
+      <div class="box box-new">
+        <div class="box-title">v3-new.json（新写入）</div>
+        <div class="box-body">snapshotId: 101 · schemaId: 2<br>→ manifest-list-3.avro → 新 Parquet 文件</div>
+      </div>
+      <div class="box box-hi">
+        <div class="box-title">v2-abc.json（当前有效）</div>
+        <div class="box-body">snapshotId: 100</div>
+      </div>
+      <div class="box box-immut box-dim">
+        <div class="box-title">v1-def.json（历史）</div>
+        <div class="box-body">snapshotId: 99</div>
+      </div>
+    </div>
+  </div>
+  <div class="insight">v3-new.json 已写入 S3，但在 CAS 成功之前，所有引擎查询 Catalog 仍得到 v2 路径。写操作对读者不可见，直到指针翻转完成——这是原子发布的基础。</div>
+</div>
+
+<!-- Stage 2 -->
+<div class="stage" id="s2">
+  <div class="stage-title">③ 指针翻转（CAS）：原子地将新版本设为当前版本</div>
+  <div class="stage-desc">Catalog 执行 compare-and-swap：若当前值等于 v2，则替换为 v3；否则拒绝。该操作要么完全成功，要么完全失败——没有中间状态。</div>
+  <div class="obj-layout">
+    <div class="col" style="min-width:220px">
+      <div class="col-label">CAS 操作</div>
+      <div class="box box-warn">
+        <div class="box-title">compare_and_swap(</div>
+        <div class="box-body">
+          &nbsp;&nbsp;key &nbsp;&nbsp;&nbsp;&nbsp; = "sales.orders",<br>
+          &nbsp;&nbsp;expected = <span style="color:#c2410c">v2-abc.json</span>,<br>
+          &nbsp;&nbsp;new &nbsp;&nbsp;&nbsp;&nbsp; = <span style="color:#15803d">v3-new.json</span><br>
+          )
+        </div>
+      </div>
+      <div style="margin-top:12px;font-size:13px;color:#15803d;font-weight:600">→ 成功：指针已翻转</div>
+      <div style="font-size:12px;color:#8c959f;margin-top:4px">若此时另一 writer 已将指针改为 v3'，<br>则 CAS 返回失败，Spark 需重试</div>
+    </div>
+    <div class="arrow-mid" style="color:#15803d">→</div>
+    <div class="col" style="flex:1">
+      <div class="col-label">Catalog（翻转后）</div>
+      <div class="box box-ok">
+        <div class="box-title">指针（已更新）</div>
+        <div class="box-body">sales.orders<br><strong style="color:#15803d">→ v3-new.json</strong></div>
+      </div>
+      <div style="margin-top:12px;font-size:13px;color:#57606a">此后所有引擎读到的均为 v3 版本数据</div>
+    </div>
+  </div>
+  <div class="insight"><strong>为何称为"原子"</strong>：CAS 针对单条记录的条件更新，在任何 KV 存储中天然是原子的。无需锁、无需多行事务。<br><strong>CAS 失败时的安全性</strong>：v3-new.json 已写入 S3 但无指针引用，成为孤儿文件，由 GC 异步清理。数据状态不受损坏。</div>
+</div>
+
+<!-- Stage 3 -->
+<div class="stage" id="s3">
+  <div class="stage-title">④ Nessie 的版本：将多表指针打包进 CommitObj</div>
+  <div class="stage-desc">Nessie 将"每张表的 metadata 指针"封装在一个 CommitObj 中，由 refs 表中的一行指向该 CommitObj。翻转 refs 中的这一行，等价于原子地变更整个 catalog 中多张表的状态。</div>
+  <div class="obj-layout">
+    <div class="col" style="min-width:175px">
+      <div class="col-label">refs 表（可变）</div>
+      <div class="box box-mut">
+        <div class="box-title">branch "main"</div>
+        <div class="box-body">→ <span style="color:#c2410c">CommitObj(c3)</span></div>
+      </div>
+      <div class="box box-mut">
+        <div class="box-title">branch "experiment"</div>
+        <div class="box-body">→ <span style="color:#c2410c">CommitObj(c5)</span></div>
+      </div>
+      <div class="box-note" style="font-size:12px;color:#8c959f;margin-top:6px">每行更新需要 single-key CAS</div>
+    </div>
+    <div class="arrow-mid">→</div>
+    <div class="col" style="flex:1">
+      <div class="col-label">objs 表（不可变，内容寻址）</div>
+      <div class="box box-hi">
+        <div class="box-title">CommitObj(c3) — main 当前 HEAD</div>
+        <div class="box-body">parent: c2<br>changes: {<br>&nbsp;&nbsp;sales.orders &nbsp;&nbsp;&nbsp; → <span style="color:#a16207">v43.json</span>,<br>&nbsp;&nbsp;sales.customers → <span style="color:#a16207">v17.json</span><br>}</div>
+        <div class="box-note">ObjId = hash(内容)，写入后不可变</div>
+      </div>
+      <div class="box box-immut box-dim">
+        <div class="box-title">CommitObj(c2)</div>
+        <div class="box-body">parent: c1 · changes: {...}</div>
+      </div>
+    </div>
+  </div>
+  <div class="insight"><strong>多表原子性的来源</strong>：CommitObj(c3) 同时包含 sales.orders 和 sales.customers 两张表的新指针。refs 表中"main → c3"这一次 CAS 成功后，两张表同时对所有读者可见——这即是"多表原子 commit"。</div>
+</div>
+
+<!-- Stage 4 -->
+<div class="stage" id="s4">
+  <div class="stage-title">⑤ 幂等写的意义：CAS 失败无需回滚</div>
+  <div class="stage-desc">内容寻址的核心性质：相同内容产生相同 ObjId。向 objs 表写入相同内容两次，第二次等同于空操作。这使得 CAS 失败时无需任何回滚逻辑。</div>
+  <div class="cmp">
+    <div class="cmp-col">
+      <h4>普通数据库写入（需要回滚）</h4>
+      <div class="box box-mut"><div class="box-title">步骤 1</div><div class="box-body">INSERT INTO table VALUES ...</div></div>
+      <div class="box box-mut"><div class="box-title">步骤 2</div><div class="box-body">UPDATE table SET ...</div></div>
+      <div class="fail-label">失败</div>
+      <div class="box" style="background:#fef2f2;border-color:#fca5a5;border:1px solid">
+        <div class="box-title" style="color:#dc2626;font-size:13px;font-weight:700">必须 ROLLBACK</div>
+        <div class="box-body">否则步骤 1 的数据残留，状态不一致</div>
+      </div>
+    </div>
+    <div class="cmp-col">
+      <h4>Nessie 内容寻址写入（天然幂等）</h4>
+      <div class="box box-immut"><div class="box-title">objs.put(commit_A)</div><div class="box-body">hash(commit_A) = "abc123"<br>objs["abc123"] = commit_A</div></div>
+      <div class="box box-immut"><div class="box-title">objs.put(commit_A)（重复写）</div><div class="box-body">key 已存在，写入被忽略，无副作用</div></div>
+      <div class="ok-label">天然幂等</div>
+      <div class="box box-ok">
+        <div class="box-title">CAS 失败时</div>
+        <div class="box-body">objs 中的孤儿对象不影响正确性<br>后台 GC 定期清理，无需 ROLLBACK</div>
+      </div>
+    </div>
+  </div>
+  <div class="insight"><strong>幂等</strong>：执行 N 次与执行 1 次效果相同。内容寻址使每次写入幂等，允许将全部重 IO 置于 CAS 之前，CAS 失败时直接重试而无需任何清理操作。</div>
+</div>
+
+</div>
+
+<script>
+function show(i) {
+  document.querySelectorAll('.stage').forEach((s,j) => s.classList.toggle('active', i===j));
+  document.querySelectorAll('.nav-btn').forEach((b,j) => b.classList.toggle('active', i===j));
+}
+</script>
+</body>
+</html>

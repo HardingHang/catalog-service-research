@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>图1：Lakehouse 整体架构关系</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+  background: #f6f8fa; color: #1f2328;
+  padding: 24px 20px 32px;
+}
+h2 { font-size: 18px; font-weight: 700; color: #24292f; margin-bottom: 4px; text-align: center; }
+.cap { font-size: 13px; color: #8c959f; margin-bottom: 20px; text-align: center; }
+.diagram { max-width: 960px; margin: 0 auto; }
+
+.layer-row {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 0 8px;
+  margin-bottom: 0;
+}
+.layer-label {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; color: #57606a;
+  text-align: center; line-height: 1.35;
+  background: #fff; border: 1px solid #d0d7de; border-radius: 6px;
+  padding: 6px 4px;
+}
+.layer-body {
+  display: flex; gap: 10px; padding: 12px 14px;
+  border-radius: 6px; border: 1.5px solid;
+}
+.l-engine  { background: #dbeafe; border-color: #93c5fd; }
+.l-catalog { background: #dcfce7; border-color: #86efac; }
+.l-format  { background: #fef9c3; border-color: #facc15; }
+.l-storage { background: #f3e8ff; border-color: #c4b5fd; }
+
+.node { flex: 1; border-radius: 5px; padding: 10px 12px; border: 1px solid; }
+.node-title { font-size: 15px; font-weight: 700; margin-bottom: 5px; }
+.node-desc  { font-size: 13px; color: #57606a; line-height: 1.5; }
+.node-tag   { display: inline-block; font-size: 12px; font-weight: 600;
+              padding: 2px 8px; border-radius: 4px; margin-top: 7px; }
+
+.n-engine  { background: #eff6ff; border-color: #bfdbfe; }
+.n-engine  .node-title { color: #1d4ed8; }
+.n-engine  .node-tag   { background: #dbeafe; color: #1d4ed8; }
+.n-nessie  { background: #f0fdf4; border-color: #86efac; }
+.n-nessie  .node-title { color: #15803d; }
+.n-nessie  .node-tag   { background: #dcfce7; color: #15803d; }
+.n-cat     { background: #f6fef9; border-color: #bbf7d0; }
+.n-cat     .node-title { color: #166534; }
+.n-format  { background: #fefce8; border-color: #fde68a; }
+.n-format  .node-title { color: #92400e; }
+.n-format  .node-tag   { background: #fef9c3; color: #92400e; }
+.n-storage { background: #faf5ff; border-color: #e9d5ff; }
+.n-storage .node-title { color: #6d28d9; }
+.n-storage .node-tag   { background: #f3e8ff; color: #6d28d9; }
+.dim { opacity: 0.4; }
+
+.arrow-row {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 0 8px;
+  margin: 5px 0;
+}
+.arrow-block { display: flex; flex-direction: column; gap: 3px; padding: 2px 6px; }
+.arw { display: flex; align-items: flex-start; gap: 10px; }
+.arw-icon { font-size: 18px; flex-shrink: 0; width: 24px; text-align: center; line-height: 1.3; }
+.arw-label { font-size: 13px; line-height: 1.45; }
+
+.roles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 18px; }
+.role-card { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 13px 15px; }
+.role-card h4 { font-size: 14px; font-weight: 700; color: #24292f; margin-bottom: 5px; }
+.role-card p  { font-size: 13px; color: #57606a; line-height: 1.6; }
+</style>
+</head>
+<body>
+
+<h2>图 1 · Lakehouse 整体架构关系</h2>
+<p class="cap">各层组件的职责与调用关系（从上到下：引擎层 → Catalog 层 → 表格式层 → 对象存储层）</p>
+
+<div class="diagram">
+
+  <div class="layer-row">
+    <div class="layer-label">计算<br>引擎层</div>
+    <div class="layer-body l-engine">
+      <div class="node n-engine">
+        <div class="node-title">Spark</div>
+        <div class="node-desc">分布式批处理引擎，执行 ETL 任务</div>
+        <span class="node-tag">ETL 执行者</span>
+      </div>
+      <div class="node n-engine" style="flex:0.85">
+        <div class="node-title">Trino</div>
+        <div class="node-desc">交互式 SQL 查询引擎</div>
+        <span class="node-tag">查询引擎</span>
+      </div>
+      <div class="node n-engine" style="flex:0.85">
+        <div class="node-title">Flink</div>
+        <div class="node-desc">流式处理引擎</div>
+        <span class="node-tag">流处理</span>
+      </div>
+      <div class="node n-engine" style="flex:1.1; border-style:dashed">
+        <div class="node-title">DBA / 数据工程师</div>
+        <div class="node-desc">通过 SQL 操控引擎，负责监控与事故处理</div>
+        <span class="node-tag">人 · 操作者</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row">
+    <div></div>
+    <div class="arrow-block">
+      <div class="arw">
+        <span class="arw-icon" style="color:#15803d">↓</span>
+        <span class="arw-label" style="color:#15803d"><strong>引擎 → Catalog：</strong>loadTable(name, branch)，询问"该表当前 metadata.json 在哪"</span>
+      </div>
+      <div class="arw">
+        <span class="arw-icon" style="color:#1d4ed8">↑</span>
+        <span class="arw-label" style="color:#1d4ed8"><strong>Catalog → 引擎：</strong>返回 metadata.json 的 S3 路径，引擎随后直接读写 S3</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="layer-row">
+    <div class="layer-label">Catalog<br>层</div>
+    <div class="layer-body l-catalog">
+      <div class="node n-nessie">
+        <div class="node-title">Nessie</div>
+        <div class="node-desc">维护 refs 表（branch→commit）+ objs 表（不可变 commit 链），提供 branch / merge / log / diff</div>
+        <span class="node-tag">Git-like Catalog</span>
+      </div>
+      <div class="node n-cat">
+        <div class="node-title">Polaris / Lakekeeper</div>
+        <div class="node-desc">维护 table_name → metadata 路径映射，提供 RBAC、Credential Vending，无 catalog-wide branch</div>
+      </div>
+      <div class="node n-cat dim" style="flex:0.65">
+        <div class="node-title">Hive Metastore</div>
+        <div class="node-desc">传统 Catalog，无版本控制</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row">
+    <div></div>
+    <div class="arrow-block">
+      <div class="arw">
+        <span class="arw-icon" style="color:#92400e">↑</span>
+        <span class="arw-label" style="color:#92400e"><strong>表格式 → Catalog：</strong>Iceberg 写入完成新 metadata.json 后，通知 Catalog 执行 CAS 翻指针</span>
+      </div>
+      <div class="arw">
+        <span class="arw-icon" style="color:#15803d">↓</span>
+        <span class="arw-label" style="color:#15803d"><strong>Catalog → 表格式：</strong>返回当前有效 metadata.json 路径，引擎据此直接读写 S3</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="layer-row">
+    <div class="layer-label">表格式<br>层</div>
+    <div class="layer-body l-format">
+      <div class="node n-format">
+        <div class="node-title">Apache Iceberg</div>
+        <div class="node-desc">定义不可变文件树规范：metadata.json → manifest list → manifest file → Parquet。每次写生成新 metadata.json，旧版本保留</div>
+        <span class="node-tag">表格式规范</span>
+      </div>
+      <div class="node n-format" style="flex:0.75">
+        <div class="node-title">Parquet 文件</div>
+        <div class="node-desc">列式存储，写入后不可变。一张表对应若干个 .parquet</div>
+      </div>
+      <div class="node n-format dim" style="flex:0.6">
+        <div class="node-title">Delta / Hudi</div>
+        <div class="node-desc">其他表格式，Nessie 不支持</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row">
+    <div></div>
+    <div class="arrow-block">
+      <div class="arw">
+        <span class="arw-icon" style="color:#6d28d9">↓</span>
+        <span class="arw-label" style="color:#6d28d9"><strong>写入对象存储：</strong>所有 metadata.json 与 Parquet 数据文件均持久存储于对象存储</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="layer-row">
+    <div class="layer-label">对象<br>存储层</div>
+    <div class="layer-body l-storage">
+      <div class="node n-storage">
+        <div class="node-title">S3 / GCS / ADLS</div>
+        <div class="node-desc">
+          存放全部 Parquet 数据文件 + 全部 metadata.json / manifest 文件。<br>
+          写入即不可变：每次"修改"等于写一个新文件，旧文件不删除。<br>
+          Nessie / Polaris 本身不存储于此——它们使用独立数据库存元数据。
+        </div>
+        <span class="node-tag">不可变 Blob Store</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="roles">
+    <div class="role-card">
+      <h4>ETL（Extract-Transform-Load）</h4>
+      <p>数据处理流水线程序，由数据工程师编写，在 Spark / Flink 上运行。从源系统抽取数据，经清洗转换后写入目标表。在 Nessie 场景中，ETL 程序就是向某个 branch 提交数据的写端。</p>
+    </div>
+    <div class="role-card">
+      <h4>DBA（数据库管理员）</h4>
+      <p>负责监控数据平台健康状态、处理事故（如误删表后回滚）以及管理权限。在 Lakehouse 语境下，DBA 通过 SQL 工具操控 Spark / Trino，通过 Nessie CLI 查看 commit log 并执行 revert。</p>
+    </div>
+    <div class="role-card">
+      <h4>Catalog 的核心职责</h4>
+      <p>唯一核心职责：维护"表名 → 当前有效 metadata.json 路径"的映射，并保证每次更新是原子的（CAS）。引擎不需要了解文件如何存储，只需向 Catalog 查询"该表当前在哪"。</p>
+    </div>
+    <div class="role-card">
+      <h4>Iceberg 与 Catalog 的分工</h4>
+      <p>Iceberg 定义"文件如何组织成表"（格式规范）。Catalog 定义"哪个版本的文件当前有效"（指针服务）。写操作流程：Iceberg 生成新 metadata.json → Catalog 执行 CAS 翻指针 → 引擎下次查询时读到新版本。</p>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
