@@ -41,6 +41,61 @@
    - 这一层是真正保存和解释格式原生元数据与数据的地方，例如 Iceberg catalog backend、Lance dataset、Hive Metastore、JDBC backend，以及各自依赖的对象存储或文件系统。
    - 它解决的是“数据和格式原生元数据最终由谁存、谁解释、谁执行”。
 
+
+#### 典型 SQL 示例
+
+```sql
+USE iceberg; -- 切换catalog
+USE db; -- 切换schema
+
+CREATE TABLE IF NOT EXISTS iceberg_scores (
+  id INT,
+  score INT
+) USING iceberg;
+
+INSERT INTO iceberg_scores VALUES (1, 95), (2, 88);
+
+SELECT * FROM iceberg.db.iceberg_scores VERSION AS OF 123456789;
+```
+
+ SELECT 时发生了什么：
+
+  1. Spark
+      - 负责解析这条 SQL
+      - 识别出这是一次 SELECT
+      - 同时识别出 VERSION AS OF 123456789 是一条 time travel 查询
+      - 生成执行计划
+      
+  2. Gravitino Spark connector
+      - 负责把 iceberg.db.iceberg_scores 这个表标识解析到 Gravitino 管理的 catalog/schema/table
+      - 通过统一元数据控制面找到这张表的元数据入口
+      - 再把表加载过程桥接给底层 Iceberg catalog
+      - Iceberg SparkCatalog / SparkTable
+        - 真正理解 VERSION AS OF
+        - 根据指定 snapshot/version 找到对应的 Iceberg 元数据版本
+        - 读取对应的 metadata.json、manifest 等
+        - 返回那个历史版本的数据视图
+
+多格式支持能力：
+
+```sql
+// use hive catalog
+USE hive;
+CREATE DATABASE db;
+USE db;
+CREATE TABLE hive_students (id INT, name STRING);
+INSERT INTO hive_students VALUES (1, 'Alice'), (2, 'Bob');
+
+// use Iceberg catalog
+USE iceberg;
+USE db;
+CREATE TABLE IF NOT EXISTS iceberg_scores (id INT, score INT) USING iceberg;
+INSERT INTO iceberg_scores VALUES (1, 95), (2, 88);
+
+// execute federation query between hive table and iceberg table
+SELECT hs.name, is.score FROM hive.db.hive_students hs JOIN iceberg_scores is ON hs.id = is.id;
+```
+
 ## 3. Gravitino 支持的数据格式与对象类型
 
 本章结论：Gravitino 的支持范围必须同时从“对象类型”和“provider/格式”两个维度理解，统一 REST 覆盖对象最广，但专用协议只覆盖特定格式。
@@ -285,22 +340,32 @@ curl -X POST \
 ```
 
 ```
-    统一 API 路径
-      -> Gravitino REST/OpenAPI
-      -> 通用表管理模型
-      -> Gravitino dispatcher
-      -> Iceberg catalog ops
-                        \
-                         \
-                          -> Iceberg catalog backend
-                         /
-                        /
-    Iceberg REST 路径
-      -> Iceberg REST API
-      -> Iceberg 原生协议模型
-      -> Iceberg REST dispatchers
-      -> CatalogWrapperForRest
+  统一 API 路径
+    -> Gravitino REST/OpenAPI
+    -> 通用表管理模型
+    -> Gravitino dispatcher
+    -> IcebergCatalogOperations
+    -> Iceberg catalog backend
+    -> Iceberg metadata / data files
+    -> Gravitino 统一控制面视图
+
+
+  Iceberg REST 路径
+    -> Iceberg REST API
+    -> Iceberg 原生协议模型
+    -> Iceberg REST dispatchers
+    -> CatalogWrapperForREST
+    -> Iceberg catalog backend
+    -> Iceberg metadata / data files
 ```
+
+这个示例对应的是 `Iceberg REST API` 路径，而不是统一 `REST/OpenAPI` 路径。它的关键特征是：
+
+1. 请求先按 Iceberg 原生协议模型解析。
+2. 服务端进入 `IcebergTableOperations -> IcebergTableOperationExecutor -> CatalogWrapperForREST`。
+3. 最终直接调用 `Iceberg catalog backend` 创建表，并写入 Iceberg 原生元数据，例如 `metadata.json`。
+4. 这条路径默认不会回到 Gravitino 统一 `createTable` 链路，因此不会像统一 API 建表那样在同一步骤中写入统一 `table_meta`。
+5. 如果后续再通过统一 API 或 Spark connector 的 `loadTable` 路径访问这张表，Gravitino 可以再把它导入为统一视图；但这属于后续导入，不属于这次 `Iceberg REST` 建表动作本身。
 
 ### 4.4 Lance REST API
 
@@ -366,31 +431,18 @@ Lance REST API 明显比统一 Gravitino API 更窄，但保留了 Lance 自身�
                                        -> Gravitino metadata store
 ```
 
-
+这个示例对应的是 `Lance REST API` 路径。它和 `Iceberg REST API` 的关键差异在于，这条路径会桥接回 Gravitino 的通用建表接口：
+1. 请求先进入 `Lance REST` 资源类，解析 Arrow stream、location 和 Lance 专用属性。
+2. 然后进入 `GravitinoLanceTableOperations`，并调用 `catalog.asTableCatalog().createTable(...)`。
+3. 后续进入 `GenericCatalogOperations -> LanceTableOperations`。
+4. `LanceTableOperations` 会先执行 `Dataset.create(...)` 创建底层 Lance dataset，再调用 `super.createTable(...)` 写入 Gravitino 统一表元数据。
+5. 因此，这条 `Lance REST` 建表路径不仅创建 Lance 原生对象，也会在同一步骤中写入统一 `table_meta`。
 
 ## 5. 不同协议对比
 
 本章结论：统一 REST 覆盖面最广，但不能替代 `Iceberg REST` 和 `Lance REST` 的格式原生语义；三者是分层互补，而不是一套兼容另一套。
 
-### 5.1 协议与对象支持矩阵
-
-| 对象或格式 | Gravitino REST/OpenAPI | Iceberg REST | Lance REST |
-|---|---|---|---|
-| Iceberg table | 是 | 是 | 否 |
-| Iceberg namespace | 是 | 是 | 否 |
-| Iceberg view | 统一 REST 当前无公开 `views` 端点 | 是 | 否 |
-| Lance table | 是 | 否 | 是 |
-| Hive table | 是 | 否 | 否 |
-| Paimon table | 是 | 否 | 否 |
-| Hudi table | 是 | 否 | 否 |
-| JDBC table | 是 | 否 | 否 |
-| Fileset | 是 | 否 | 否 |
-| Topic | 是 | 否 | 否 |
-| Function | 是 | 否 | 否 |
-| Model | 是 | 否 | 否 |
-| Tag / Policy / Statistics | 是 | 否 | 否 |
-
-### 5.2 统一了什么 / 没统一什么
+### 5.1 统一了什么 / 没统一什么
 
 | 维度 | 已统一 | 未统一 |
 |---|---|---|
@@ -403,7 +455,7 @@ Lance REST API 明显比统一 Gravitino API 更窄，但保留了 Lance 自身�
 
 更直接地说，Gravitino 统一的是“控制面”，没有统一的是“所有格式的原生协议和所有引擎的原生运行时语义”。
 
-### 5.3 各自独有能力
+### 5.2 各自独有能力
 
 | API | 该 API 独有或最有代表性的能力 |
 |---|---|
@@ -411,7 +463,7 @@ Lance REST API 明显比统一 Gravitino API 更窄，但保留了 Lance 自身�
 | Iceberg REST | `Iceberg /v1/config`、Iceberg 原生 namespace/table/view 请求与响应模型、Iceberg 客户端直接兼容、view 专用 REST 端点、面向 Iceberg 生态的 credential vending 与协议级能力声明 |
 | Lance REST | Lance namespace/table 原生端点、`create-empty`、`register`、`deregister`、基于 Arrow stream 的创建路径、`drop_columns` / `alter_columns` 等 Lance 特有表生命周期能力 |
 
-### 5.4 共有能力
+### 5.3 共有能力
 
 严格来说，这三套 API 的“共有能力”只存在于它们共同覆盖的那一小部分对象生命周期上，而不是端点完全一致。
 
@@ -424,27 +476,6 @@ Lance REST API 明显比统一 Gravitino API 更窄，但保留了 Lance 自身�
 | 存在性检查 | 一般通过统一对象查询路径实现 | 是 | 是 |
 | 专用 view 生命周期 | 否，统一 REST 当前无公开 view 端点 | 是 | 否 |
 | 专用 governance 生命周期 | 是 | 否 | 否 |
-
-### 5.5 统一 API 能否兼容所有 Iceberg API 和 Lance API 的能力
-
-不能。
-
-原因不是“对象名字不一样”，而是三套 API 的目标层次不同。
-
-1. `Gravitino REST/OpenAPI` 的目标是统一控制面和治理面。
-2. `Iceberg REST` 的目标是兼容 Iceberg 客户端协议。
-3. `Lance REST` 的目标是兼容 Lance 客户端和 Lance 表生命周期。
-
-因此，统一 API 无法完整覆盖以下能力：
-
-1. `Iceberg REST` 的 `/v1/config`、Iceberg 原生 request/response 结构、原生 view 端点、协议声明、credential vending 语义。
-2. `Lance REST` 的 `create-empty`、`register`、`deregister`、Arrow stream 创建、`drop_columns`、`alter_columns` 这类 Lance 特有语义。
-
-反过来，`Iceberg REST` 和 `Lance REST` 也无法覆盖统一 API 的能力，例如：
-
-1. `metalake`、catalog type/provider 管理。
-2. `fileset`、`topic`、`function`、`model`。
-3. `tag`、`policy`、`owner`、`permission`、`statistics`、`credential` 等治理对象。
 
 ## 6. 计算引擎接入 Gravitino
 
@@ -529,53 +560,14 @@ Spark connector 是理解 Gravitino 多格式策略最好的例子，因为它�
 1. `Gravitino REST/OpenAPI`
    - 负责访问 Gravitino Server，处理元数据和治理信息。
 2.  `SparkIcebergTable` 并不是一个“只带 Gravitino 元数据的壳”，而是一个复合对象
-   
-   1. 把 Gravitino 元数据暴露给 Spark
+   - 把 Gravitino 元数据暴露给 Spark
       - `name()`
       - `schema()`
       - `properties()`
       - `partitioning()`
       - 这些信息由 `GravitinoTableInfoHelper` 根据 Gravitino table 元数据生成
-   2. 把真实数据面行为委托给底层 Iceberg `SparkTable`
+   - 把真实数据面行为委托给底层 Iceberg `SparkTable`
       - 例如 `newScanBuilder(...)` 直接委托到底层 Iceberg `SparkTable`
-
-#### 典型 SQL 示例
-
-```sql
-USE iceberg; -- 切换catalog
-USE db; -- 切换schema
-
-CREATE TABLE IF NOT EXISTS iceberg_scores (
-  id INT,
-  score INT
-) USING iceberg;
-
-INSERT INTO iceberg_scores VALUES (1, 95), (2, 88);
-
-SELECT * FROM iceberg.db.iceberg_scores VERSION AS OF 123456789;
-```
-
- SELECT 时各层分别负责什么：
-
-  1. Spark
-      - 负责解析这条 SQL
-      - 识别出这是一次 SELECT
-      - 同时识别出 VERSION AS OF 123456789 是一条 time travel 查询
-      - 生成执行计划
-      
-  2. Gravitino Spark connector
-      - 负责把 iceberg.db.iceberg_scores 这个表标识解析到 Gravitino 管理的 catalog/schema/table
-      - 通过统一元数据控制面找到这张表的元数据入口
-      - 再把表加载过程桥接给底层 Iceberg catalog
-      - Iceberg SparkCatalog / SparkTable
-      
-        - 真正理解 VERSION AS OF
-      
-        - 根据指定 snapshot/version 找到对应的 Iceberg 元数据版本
-      
-        - 读取对应的 metadata.json、manifest 等
-      
-        - 返回那个历史版本的数据视图
 
 ### 6.3 Flink 总览
 
@@ -619,24 +611,12 @@ gravitino.uri=http://localhost:8090
 
 ## 7. 不同 API 接入方式
 
-本章结论：不一样。统一 REST、专用协议 REST 和引擎 connector 分别解决的是控制面、协议兼容和运行时接入三个不同问题。
-
-结论是不一样。
-
-### 7.1 三种典型接入模式
 
 | 模式 | 例子 | 引擎或客户端期望的能力 |
 |---|---|---|
 | 统一元数据 connector | Spark connector、Flink connector、Trino connector | 通过各自引擎扩展点接入 Gravitino |
 | 原生格式协议 | Iceberg 客户端或支持 Iceberg 的引擎 | 直接要求 Iceberg 协议兼容 |
 | 原生格式协议 | 支持 Lance 的客户端或引擎 | 直接要求 Lance namespace/table 协议 |
-
-### 7.2 实际含义
-
-1. Spark、Flink、Trino 并不是走同一套接入 API。
-2. 它们都把 Gravitino 当成元数据权威源，但具体进入 Gravitino 的路径取决于各自引擎的扩展模型。
-3. 对 Iceberg 生态工具来说，可以绕过引擎专用 connector，直接用 `Iceberg REST`。
-4. 对 Lance 生态工具来说，也可以直接使用 `Lance REST`。
 
 ## 8. 一套统一 API 如何操作不同格式的对象
 
