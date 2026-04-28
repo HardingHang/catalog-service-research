@@ -464,7 +464,7 @@ Catalog Service 管理这类资产的典型场景：
 
 - Unity Catalog 更代表湖仓目录型产品的实现路径
 - Gravitino 更代表统一元数据治理平台的实现路径
-- 两者分别覆盖了“对外对象组织”与“对内统一治理抽象”两类值得参考的方向
+- 两者分别覆盖了“面向用户的对象目录体验”与“面向平台的统一治理抽象”两类值得参考的方向
 
 ### 3.1 Unity Catalog 的数据模型特点
 
@@ -689,6 +689,8 @@ Gravitino 的核心特点是：
 - `Entity`
 - `SecurableObject`
 
+可以用一句话理解：`MetadataObject` 解决“它是什么元数据对象”，`Entity` 解决“它在系统内部怎么存和管理”，`SecurableObject` 解决“它作为资源怎么做授权”。
+
 这意味着在它的视角里，很多对象虽然底层分表，但在上层都属于统一元对象体系的一部分。
 
 这类统一对象体系通常覆盖：
@@ -831,9 +833,9 @@ Gravitino 最值得借鉴的是：
 
 整体看：
 
-- Unity Catalog 更强在对外对象组织、命名空间层级，以及 `volume/model/function` 这类对象的产品化体验
-- Gravitino 更强在统一抽象、统一治理字段，以及把非表资产纳入主元数据体系的能力
-- 如果我们的目标是 AI 时代统一 Catalog Service，更适合以 Gravitino 作为主要抽象参考，以 Unity Catalog 作为对外对象组织和使用体验参考
+- Unity Catalog 更偏面向用户的对象目录体验，在命名空间组织以及 `volume/model/function` 这类对象的使用方式上更成熟
+- Gravitino 也具备清晰的对象层级，但更强项在统一抽象、统一治理字段，以及把非表资产纳入主元数据体系的能力
+- 如果我们的目标是 AI 时代统一 Catalog Service，更适合以 Gravitino 作为主要抽象参考，以 Unity Catalog 作为面向用户的对象组织和使用体验参考
 - 两者共同的不足是：都还缺少足够强的统一依赖图层，尤其缺少面向 `feature/tool/agent` 的通用关系建模
 - 因此我们的方案需要在吸收两者优点的基础上，进一步补上统一 `asset`、统一 `asset_version` 和统一 `relations`
 
@@ -854,7 +856,7 @@ Gravitino 最值得借鉴的是：
 | 关系模型 | 父子层级强，通用依赖弱 | 治理关系较多，通用依赖弱 | 独立 `relations` 图层统一表达依赖 |
 | 审计与软删除 | 有基础审计，整体较轻 | `auditInfo/deletedAt/currentVersion` 很统一 | 审计、软删除、当前版本做成底座能力 |
 | 对 AI-native 对象的准备 | 不够，尤其缺 `feature/agent` | 比较接近，但仍不完整 | 把 `feature`、`agent` 做成一等资产 |
-| 最值得借鉴的点 | 对外对象组织清晰，`volume/model/function` 用户体验好 | 统一抽象强，治理字段一致性好 | 两者结合，再补统一 `asset/version/relation` |
+| 最值得借鉴的点 | 面向用户的对象组织清晰，`volume/model/function` 使用体验较成熟 | 统一抽象强，治理字段一致性好 | 两者结合，再补统一 `asset/version/relation` |
 
 ---
 
@@ -873,7 +875,7 @@ Gravitino 最值得借鉴的是：
 
 可以概括为：
 
-**Gravitino 的统一抽象能力 + Unity Catalog 的对象产品形态 + 我们自己的统一 `asset/version/relation` 底座。**
+**Gravitino 的统一抽象能力 + Unity Catalog 面向用户的对象目录体验 + 我们自己的统一 `asset/version/relation` 底座。**
 
 ### 4.1 推荐最终对象层级
 
@@ -901,6 +903,31 @@ Gravitino 最值得借鉴的是：
 - AI 时代非表资产的统一治理需求
 
 ---
+
+### 4.1.1 为什么采用“公共资产表 + 扩展表”模式
+
+这里有一个关键设计选择：是“每个资产类型一张独立主表”，还是“先有统一公共资产表，再用扩展表承接类型差异”。
+
+本方案更推荐后一种，也就是：
+
+- 用统一 `assets` 表承接所有资产的公共字段
+- 用 `table_assets`、`model_assets`、`function_assets`、`agent_assets` 等扩展表承接类型特有字段
+
+这样设计的主要好处是：
+
+- 统一搜索、统一权限、统一审计、统一审批更容易落地
+- 资产关系图可以围绕统一 `asset_id` 构建
+- 后续新增资产类型时，扩展成本更低
+
+如果每个类型都采用独立主表，短期实现会更直接，但中长期会带来：
+
+- 跨类型查询需要在多张对象表之间拼接
+- 权限、关系、审计能力容易分散实现
+- 新增资产类型时，平台能力需要重复接入
+
+因此，本方案的取舍是：
+
+**用统一公共资产表承接治理共性，用扩展表承接类型差异。**
 
 ### 4.2 推荐最终数据模型
 
@@ -1227,6 +1254,8 @@ erDiagram
 
 建议将 alias 独立建表。
 
+原因是 alias 往往是一对多、可切换、可查询并需要唯一约束的版本级子对象，比直接放单字段或 JSON 更适合独立管理。
+
 | 字段 | 说明 |
 |---|---|
 | `id` | 主键 |
@@ -1268,6 +1297,15 @@ erDiagram
 ##### `feature_set_assets`
 
 首期建议先做 `FEATURE_SET` 资产，而不是一开始就把单个 feature 独立成一级对象。
+
+这样设计的主要原因是：
+
+- 真实场景中，特征通常以“特征集”而不是“单个特征”被共同生产、共同服务和共同消费
+- 实体键、来源、刷新策略、质量规则、新鲜度 SLA 等治理字段，通常天然属于 feature set 级别
+- 如果首期就把单个 feature 提升为一级资产，资产数量和关系数量会快速膨胀，增加治理复杂度
+- 先以 `FEATURE_SET` 作为一等资产，更符合首期统一治理“特征生产与服务单元”的目标
+
+后续如果场景成熟，再逐步增强到单 feature 级搜索、血缘和治理即可。
 
 | 字段 | 说明 |
 |---|---|
@@ -1439,6 +1477,54 @@ Agent 应作为一等对象进入资产体系。
 | `status` | 发送状态 |
 | `created_at` | 创建时间 |
 
+#### 4.2.7 关于统一 `asset_version` 的设计说明
+
+推荐方案中，所有需要版本治理的资产都进入统一 `asset_versions` 主表，但不建议把所有版本细节都压进这一张表。
+
+更合适的模式是：
+
+- 用统一 `asset_versions` 承接所有版本对象的共性治理字段
+- 用 `model_version_details`、`function_version_details`、`feature_version_details`、`agent_version_details` 等类型化明细表承接各资产版本的专属语义
+
+统一 `asset_versions` 适合放的字段主要包括：
+
+- `asset_version_id`
+- `asset_id`
+- `version`
+- `version_label`
+- `status`
+- `registration_status`
+- `change_summary`
+- `approved_by/approved_at`
+- `published_by/published_at`
+- `created_by/created_at`
+
+这些字段具有几个共同特点：
+
+- 各类资产版本都会使用
+- 会参与统一审批、发布、回滚和审计流程
+- 适合做统一搜索、统一查询和统一状态管理
+
+但不同资产的版本语义差异很大，例如：
+
+- `model version` 更关注工件地址、评测指标、签名、训练任务
+- `function/tool version` 更关注输入输出契约、实现地址、运行约束
+- `feature version` 更关注特征定义、转换逻辑、服务契约
+- `agent version` 更关注工作流定义、模型依赖、工具依赖、护栏配置
+
+如果把这些字段全部塞进一张通用 version 大表，会带来几个问题：
+
+- 字段膨胀，空字段大量增加
+- 不同资产版本语义混杂，难以维护
+- 强类型校验和版本 API 会变复杂
+- 后续引入新资产类型时，主表需要频繁扩展
+
+因此，统一版本核的推荐做法不是“所有版本信息只放一张表”，而是：
+
+**统一 `asset_versions` 主表 + 类型化 `*_version_details` 明细表。**
+
+这样既能保留统一治理能力，又能保持各资产版本模型的清晰边界。
+
 ---
 
 ### 4.3 字段放置标准：什么该结构化，什么可以放 `properties`
@@ -1509,9 +1595,157 @@ Agent 应作为一等对象进入资产体系。
 - 存储结构简单
 - 查询性能与筛选能力
 
+#### 4.3.4 各表 `properties_json` 推荐承载内容
+
+`properties_json` 建议只承载低频、弱约束、展示型或临时扩展属性，不建议放会参与权限、审批、关系、版本流转和高频检索的核心字段。
+
+下面给出各核心表的推荐放置内容。
+
+##### `domains.properties_json`
+
+推荐放：
+
+- 业务别名
+- 展示标签
+- 联系方式
+- wiki 或说明文档链接
+
+##### `catalogs.properties_json`
+
+推荐放：
+
+- catalog 展示说明
+- 默认文档链接
+- 迁移备注
+- 兼容性提示
+
+##### `namespaces.properties_json`
+
+推荐放：
+
+- 业务含义说明
+- 展示分组标签
+- 协作入口链接
+
+##### `assets.properties_json`
+
+推荐放：
+
+- `business_alias`
+- `wiki_url`
+- `notebook_url`
+- `slack_channel`
+- `migration_note`
+- `demo_link`
+
+##### `model_assets.properties_json`
+
+推荐放：
+
+- `paper_url`
+- `benchmark_note`
+- 业务背景说明
+- 演示链接
+
+##### `function_assets.properties_json`
+
+推荐放：
+
+- 使用示例
+- 开发者备注
+- 演示调用链接
+
+##### `feature_set_assets.properties_json`
+
+推荐放：
+
+- 业务场景说明
+- 特征使用建议
+- 示例消费者列表
+
+##### `agent_assets.properties_json`
+
+推荐放：
+
+- `persona_style`
+- 示例问法
+- 对外展示文案
+- 业务说明链接
+
+##### `relations.properties_json`
+
+推荐放：
+
+- 关系备注
+- 关系来源说明
+- 置信度
+
+##### `external_bindings.properties_json`
+
+推荐放：
+
+- 同步备注
+- 外部映射补充说明
+- 非关键展示属性
+
+##### `audit_logs.details_json`
+
+推荐放：
+
+- 请求上下文
+- 失败原因
+- 补充审计参数
+
+##### `event_outbox.payload_json`
+
+推荐放：
+
+- 变更对象摘要
+- 事件消费所需上下文
+- 同步补充字段
+
+对于 `asset_versions`、`model_version_details`、`function_version_details`、`feature_version_details`、`agent_version_details` 上的 JSON 字段，建议优先承载版本快照、展示型备注和补充上下文；凡是系统需要理解和校验的强语义字段，仍应优先结构化建模，而不是长期堆入通用扩展属性中。
+
 ---
 
-### 4.4 推荐演进路径
+### 4.4 模型完整性与后续扩展性评估
+
+整体上，这版数据模型已经具备较高完整性，能够覆盖统一治理非表资产所需的核心骨架，主要包括：
+
+- 组织层：`domain / catalog / namespace`
+- 统一资产层：`assets`
+- 统一版本层：`asset_versions`
+- 类型扩展层：`table / volume / model / function / feature_set / agent`
+- 横切治理层：`relations / grants / policies / external_bindings / audit_logs / event_outbox`
+
+从一期建设角度看，这套模型已经能够支撑：
+
+- 统一资产发现
+- 统一权限和审批
+- 统一版本治理
+- 统一关系表达
+- 统一审计与事件分发
+
+从后续扩展性看，这套模型也具备较好的延展能力，主要原因在于：
+
+- 已有统一 `assets` 主表，后续新增资产类型时不需要重做主干
+- 已有统一 `asset_versions`，后续新增可版本化对象时可直接复用
+- 类型扩展表与横切治理表职责清晰，便于增量扩展
+- `relations` 预留了较强的跨类型依赖表达能力
+
+因此，后续如果增加 `prompt`、`workflow`、`evaluation`、`dataset`、`memory`、`resource` 等 AI-native 资产类型，整体仍然可以在现有主模型上继续扩展，而不需要推倒重来。
+
+同时也需要说明，这一版更适合作为 V1 主干模型，而不是最终终局模型。后续仍可逐步增强的方向包括：
+
+- `principal / role / group` 等主体模型
+- `tag` 等标签治理模型
+- `run` 等运行态对象模型
+- 更大规模关系查询场景下的图能力增强
+- 搜索索引与检索投影层
+
+总体上，这套模型的特点不是“字段一次性定义到最终态”，而是“先把统一治理主干建对，再在该主干上持续演进”。
+
+### 4.5 推荐演进路径
 
 建议分阶段演进，而不是一次性做成大而全系统。
 
