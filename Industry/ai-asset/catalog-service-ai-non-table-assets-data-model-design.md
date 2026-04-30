@@ -196,6 +196,148 @@ Gravitino 的主要特点是：
 - 审计日志
 - 事件分发
 
+### 3.4 为什么要把关系与治理横切层单独分一层
+
+之所以把“关系与治理横切层”单独分出来，核心原因是：这部分能力管理的不是某一种资产自己的属性，而是跨所有资产类型复用的共性治理能力。
+
+如果不单独分层，而是把这些能力分别埋进 `table / volume / model / function / feature_set / agent` 各自的资产表里，短期看实现似乎更直接，但中长期会导致关系表达分散、治理口径不一致、查询复杂度上升，以及新资产类型接入成本过高。
+
+#### 3.4.1 关系天然是跨资产的，不属于某个资产自己
+
+例如：
+
+- 模型依赖特征集
+- Agent 使用 Tool
+- Tool 读取知识库
+- 特征集来源于表
+- 模型服务绑定到某个外部 endpoint
+
+这些都不是 `model_assets` 或 `agent_assets` 自己的内部字段，而是“资产与资产之间的一条边”。  
+因此更适合单独抽象为 `relations`，而不是在每一类资产表中各自维护上游下游字段。
+
+#### 3.4.2 治理能力也是跨资产复用的，不应每类资产各实现一套
+
+以下能力对表、模型、Tool、Feature Set、Agent 都成立：
+
+- 授权
+- 审批
+- 策略绑定
+- 外部绑定
+- 审计
+- 事件通知
+
+如果不单独抽层，很容易演变成：
+
+- 表有一套授权实现
+- 模型有一套权限和发布实现
+- Agent 有一套审批实现
+- Tool 再有一套审计实现
+
+这种方式短期灵活，但长期会导致：
+
+- 概念口径不统一
+- 平台能力重复建设
+- 前后端查询接口难统一
+- 新资产类型接入时需要重复对接一遍治理能力
+
+#### 3.4.3 资产层管“点”，横切层管“边”和“控制面”
+
+这套模型里有一个关键设计思想：
+
+- `assets / asset_versions / *_assets / *_version_details` 管“点”
+- `relations / grants / policies / bindings / audit_logs / event_outbox` 管“边”和“控制面”
+
+也就是说：
+
+- 资产层回答“它是什么对象”
+- 关系层回答“它和谁有关”
+- 治理层回答“它受什么控制”
+- 审计层回答“它发生过什么”
+
+把这些职责拆开后，模型边界更清晰，也更容易支撑平台级查询和演进。
+
+#### 3.4.4 真实业务查询本身就是横切查询
+
+真实场景下，经常需要回答的问题并不是“某个模型自己的字段值是什么”，而是：
+
+- 哪些 Agent 依赖这个模型
+- 哪些模型使用了这个特征集
+- 哪些资产绑定了这个 serving endpoint
+- 哪些资产挂载了某个风险策略
+- 最近谁改了关系、策略或权限配置
+
+这些查询本质上都要跨资产类型。如果没有单独的横切治理层，就会退化为扫描多张业务表、拼接多份 JSON，甚至依赖应用层特判逻辑，复杂度会迅速上升。
+
+#### 3.4.5 横切层能显著降低新资产类型的接入成本
+
+今天纳入 Catalog 的非表资产类型可能包括：
+
+- `volume/fileset`
+- `model`
+- `function/tool`
+- `feature_set`
+- `agent`
+
+未来很可能继续扩展到：
+
+- `prompt`
+- `workflow`
+- `evaluation`
+- `dataset`
+- `memory`
+- `resource`
+
+如果关系和治理能力都嵌入每一类资产表，那么每新增一种资产类型，就需要重新补一遍：
+
+- 依赖关系表达
+- 权限模型
+- 策略绑定
+- 审计记录
+- 事件通知
+
+但如果横切层已经独立，只要新对象先接入统一 `asset_id`，就能自动复用：
+
+- `relations`
+- `grants`
+- `policies`
+- `policy_bindings`
+- `external_bindings`
+- `audit_logs`
+- `event_outbox`
+
+这会显著降低 AI-native 新资产类型的演进成本。
+
+#### 3.4.6 以血缘为例，单独建横切层更容易支撑图查询
+
+如果不单独抽象横切层，很容易把关系字段直接埋进资产表，例如：
+
+- `model_assets.upstream_feature_ids`
+- `agent_assets.tool_ids`
+- `feature_set_assets.source_table_ids`
+
+这种方式在最初看起来简单，但很快会出现问题：
+
+- 关系类型不统一
+- 多对多关系难管理
+- 版本级依赖难表达
+- 多跳遍历和影响分析难实现
+- 新资产类型加入后又要增加新的关系字段
+
+而把关系统一抽到 `relations` 后，就可以统一表达：
+
+- `MODEL_VERSION USES FEATURE_SET_VERSION`
+- `AGENT_VERSION USES TOOL_VERSION`
+- `FEATURE_SET DERIVED_FROM TABLE`
+- `TOOL READS VOLUME`
+
+这样系统才能真正把资产依赖看成一张图，并进一步支撑：
+
+- 上游下游遍历
+- 影响分析
+- 变更回溯
+- 风险评估
+- Agent 依赖审计
+
 ---
 
 ## 4. 推荐核心表关系图
@@ -275,6 +417,9 @@ erDiagram
 
 ### `domains`
 
+`domains` 用来表达最上层的组织或治理边界。  
+它通常对应租户、业务域、环境边界或 metalake 级别的隔离单元，用来承接资产分区、owner 边界和治理范围。
+
 | 字段 | 说明 |
 |---|---|
 | `domain_id` | domain 主键 |
@@ -290,6 +435,9 @@ erDiagram
 | `updated_at` | 最近更新时间 |
 
 ### `catalogs`
+
+`catalogs` 用来表达某一类资产集合及其治理空间。  
+它位于 domain 之下，承接更具体的资产分类、默认存储根以及面向用户的目录组织方式。
 
 | 字段 | 说明 |
 |---|---|
@@ -309,6 +457,9 @@ erDiagram
 | `updated_at` | 最近更新时间 |
 
 ### `namespaces`
+
+`namespaces` 用来表达 catalog 内部的进一步分组单元。  
+它通常对应 schema、项目空间、团队空间或主题分区，是资产进入统一命名空间体系前的最后一层目录。
 
 | 字段 | 说明 |
 |---|---|
@@ -330,6 +481,8 @@ erDiagram
 ### `assets`
 
 这是统一资产核，建议所有一等资产都先进入这张表。
+
+它承接的是所有资产类型共享的公共身份信息，例如名称、类型、owner、状态、当前生效版本和基础审计字段，是整套模型的统一入口。
 
 | 字段 | 说明 |
 |---|---|
@@ -359,6 +512,8 @@ erDiagram
 ### `asset_versions`
 
 所有需要治理版本的资产，共享这张版本主表。
+
+它承接的是版本级治理能力，例如审批、发布、回滚、版本说明和快照信息，使不同资产类型可以复用统一版本生命周期。
 
 | 字段 | 说明 |
 |---|---|
@@ -390,6 +545,9 @@ erDiagram
 
 ### `table_assets`
 
+`table_assets` 用来承接表资产的类型特有字段。  
+它补充的是表格式、表类型、物理存储位置、分区定义、主键定义和快照引用等结构化表语义。
+
 | 字段 | 说明 |
 |---|---|
 | `asset_id` | 对应 `assets.asset_id` |
@@ -402,6 +560,9 @@ erDiagram
 | `snapshot_ref` | 当前快照引用 |
 
 ### `table_columns`
+
+`table_columns` 用来表达表资产下的列级明细。  
+它承接的是字段名称、顺序、类型、可空性、注释和分区列信息，方便做 schema 展示、字段搜索和列级治理扩展。
 
 | 字段 | 说明 |
 |---|---|
@@ -417,6 +578,9 @@ erDiagram
 
 ### `volume_assets`
 
+`volume_assets` 用来承接文件型资产或路径型资产的扩展信息。  
+它适合表示知识库目录、训练数据目录、评测集目录、模型工件目录等对象，重点描述根路径、访问模式和生命周期策略。
+
 | 字段 | 说明 |
 |---|---|
 | `asset_id` | 对应 `assets.asset_id` |
@@ -429,6 +593,9 @@ erDiagram
 | `retention_policy_ref` | 生命周期策略引用 |
 
 ### `model_assets`
+
+`model_assets` 用来承接模型资产的稳定属性。  
+它描述的是模型家族、任务类型、框架、算法、风险等级、默认注册中心和模型卡等版本无关或低频变化信息。
 
 | 字段 | 说明 |
 |---|---|
@@ -445,6 +612,9 @@ erDiagram
 
 ### `model_version_details`
 
+`model_version_details` 用来承接模型某个具体版本的运行与评测细节。  
+它重点描述训练任务、工件清单、超参数、评测指标、输入输出签名、运行镜像和验证报告等版本级信息。
+
 | 字段 | 说明 |
 |---|---|
 | `asset_version_id` | 对应 `asset_versions.asset_version_id` |
@@ -460,6 +630,9 @@ erDiagram
 
 ### `model_version_uris`
 
+`model_version_uris` 用来记录模型版本关联的多个地址。  
+它适合承接 artifact、source、serving 等不同用途的 URI，避免把多种地址混在一个字段或 JSON 中。
+
 | 字段 | 说明 |
 |---|---|
 | `id` | 记录主键 |
@@ -469,6 +642,9 @@ erDiagram
 | `uri_type` | URI 类型，如 artifact、source、serving |
 
 ### `model_version_aliases`
+
+`model_version_aliases` 用来管理模型版本的别名映射。  
+它适合表达 `prod`、`champion`、`canary` 这类可切换、可查询、需要唯一约束的版本标签。
 
 | 字段 | 说明 |
 |---|---|
@@ -480,6 +656,9 @@ erDiagram
 建议将 alias 独立建表，原因是 alias 往往是一对多、可切换、可查询并需要唯一约束的版本级子对象，比直接放单字段或 JSON 更适合独立管理。
 
 ### `function_assets`
+
+`function_assets` 用来承接函数或工具资产的稳定属性。  
+它重点描述语言、运行时类型、入口点、确定性、副作用等级、资源配额和是否需要审批等可执行能力信息。
 
 | 字段 | 说明 |
 |---|---|
@@ -495,6 +674,9 @@ erDiagram
 | `approval_required` | 是否需要审批 |
 
 ### `function_version_details`
+
+`function_version_details` 用来承接函数或工具某个版本的实现快照。  
+它描述的是代码包或镜像地址、输入输出契约、依赖清单、运行约束和版本发布说明。
 
 | 字段 | 说明 |
 |---|---|
@@ -533,6 +715,9 @@ erDiagram
 
 ### `feature_version_details`
 
+`feature_version_details` 用来承接特征集某个版本的定义快照。  
+它重点描述特征 schema、特征定义、转换逻辑、验证报告、物化引用和服务契约等版本级信息。
+
 | 字段 | 说明 |
 |---|---|
 | `asset_version_id` | 对应 `asset_versions.asset_version_id` |
@@ -544,6 +729,9 @@ erDiagram
 | `serving_contract_json` | 服务契约定义 |
 
 ### `agent_assets`
+
+`agent_assets` 用来承接 Agent 资产的稳定属性。  
+它描述的是 Agent 类型、目标、风险等级、运行时绑定引用、审批策略、记忆策略和交互模式等治理信息。
 
 | 字段 | 说明 |
 |---|---|
@@ -559,6 +747,9 @@ erDiagram
 
 ### `agent_version_details`
 
+`agent_version_details` 用来承接 Agent 某个版本的运行定义快照。  
+它重点描述系统提示词地址、工作流图、护栏配置、运行时配置和评测报告等版本级配置。
+
 | 字段 | 说明 |
 |---|---|
 | `asset_version_id` | 对应 `asset_versions.asset_version_id` |
@@ -572,6 +763,9 @@ erDiagram
 ## 5.3 横切治理表
 
 ### `relations`
+
+`relations` 用来表达资产与资产之间的依赖关系和血缘关系。  
+它承接的是跨资产、跨类型、可多跳遍历的关系边，例如依赖、使用、产出、读取、写入和服务关系。
 
 | 字段 | 说明 |
 |---|---|
@@ -598,6 +792,9 @@ erDiagram
 
 ### `external_bindings`
 
+`external_bindings` 用来表达资产或版本与外部系统实例之间的绑定关系。  
+它重点回答“这个资产版本实际跑在哪个 registry、runtime、serving endpoint、向量索引或外部存储实例上”。
+
 | 字段 | 说明 |
 |---|---|
 | `binding_id` | 绑定记录主键 |
@@ -612,6 +809,9 @@ erDiagram
 | `properties_json` | 绑定补充属性 |
 
 ### `policies`
+
+`policies` 用来定义可复用的治理策略模板，本身不直接挂在某个资产上。  
+它更像“策略定义中心”，可以承载审批策略、风险策略、质量策略、保留策略等规则内容，再通过绑定表挂到具体资产或版本上。
 
 | 字段 | 说明 |
 |---|---|
@@ -628,6 +828,9 @@ erDiagram
 
 ### `policy_bindings`
 
+`policy_bindings` 用来表达“某条策略实际作用在谁身上”。  
+也就是说，`policies` 定义规则内容，`policy_bindings` 负责把规则绑定到 `asset` 或 `asset_version`，从而支持按资源、按版本范围、按优先级生效。
+
 | 字段 | 说明 |
 |---|---|
 | `policy_binding_id` | 策略绑定主键 |
@@ -638,7 +841,45 @@ erDiagram
 | `priority` | 优先级 |
 | `created_at` | 绑定创建时间 |
 
+`policies` 与 `policy_bindings`` 的典型使用方式可以简化理解为：
+
+- 在 `policies` 中定义“规则是什么”
+- 在 `policy_bindings` 中定义“这条规则作用到谁身上”
+
+例如：
+
+- Agent 生产发布审批策略
+  - `policies`
+    - `policy_name = agent_prod_publish_approval`
+    - `policy_type = APPROVAL`
+    - `policy_spec_json = 生产发布前需平台主管 + 合规审批`
+  - `policy_bindings`
+    - 绑定到 `客服政策问答 Agent`
+    - 或绑定到 `客服政策问答 Agent v5`
+
+- Tool 风险控制策略
+  - `policies`
+    - `policy_name = external_tool_high_risk_control`
+    - `policy_type = RISK_CONTROL`
+    - `policy_spec_json = 高风险 Tool 仅允许白名单 Agent 调用，并要求人工确认`
+  - `policy_bindings`
+    - 绑定到 `客户数据查询工具`
+
+- Feature Set 质量策略
+  - `policies`
+    - `policy_name = feature_freshness_and_quality_rule`
+    - `policy_type = QUALITY`
+    - `policy_spec_json = 缺失率 < 1%，freshness SLA <= T+1`
+  - `policy_bindings`
+    - 绑定到 `用户风险特征集`
+
+这组表回答的不是“谁有权限”，而是“这个资产必须遵守什么治理规则”。  
+相对地，`grants` 更偏向回答“谁能对什么资源执行什么动作”。
+
 ### `grants`
+
+`grants` 用来表达具体的授权关系，即“谁对什么资源拥有什么动作权限”。  
+它承接的是访问控制和执行控制，例如谁能读知识库、谁能调用模型、谁能执行 Tool、谁能发布 Agent 版本。
 
 | 字段 | 说明 |
 |---|---|
@@ -656,6 +897,9 @@ erDiagram
 
 ### `audit_logs`
 
+`audit_logs` 用来记录关键治理动作的历史轨迹。  
+它承接的是“谁在什么时候对哪个资产或版本执行了什么操作，以及结果如何”，从而支撑排障、追责、审计与合规证明。
+
 | 字段 | 说明 |
 |---|---|
 | `audit_id` | 审计事件主键 |
@@ -670,6 +914,9 @@ erDiagram
 | `timestamp` | 发生时间 |
 
 ### `event_outbox`
+
+`event_outbox` 用来记录待分发的资产变更事件。  
+它承接的是与搜索、图谱、缓存、审批流和其他下游系统的异步联动，避免把事件分发逻辑直接耦合进主事务。
 
 | 字段 | 说明 |
 |---|---|
@@ -804,7 +1051,392 @@ erDiagram
 
 ---
 
-## 8. 推荐演进路径
+## 8. 业务场景与数据模型映射
+
+为了避免“表很多但价值不清楚”，可以从典型业务场景反推每类表的职责。整体上，这套模型是在把不同性质的问题拆开承接：
+
+- `domains / catalogs / namespaces` 解决“资产放哪、归谁管、如何组织”
+- `assets / asset_versions` 解决“它是什么资产、当前生效哪个版本、能否审批发布回滚”
+- 各类 `*_assets / *_version_details` 解决“不同资产类型的强语义字段”
+- `relations / external_bindings / grants / policies / policy_bindings` 解决“依赖、绑定、权限、策略”
+- `audit_logs / event_outbox` 解决“历史动作、审计追踪、系统联动”
+
+### 8.1 场景与表映射矩阵
+
+| 业务场景 | 需要回答的问题 | 主要表 | 为什么需要这些表 |
+|---|---|---|---|
+| 统一资产发现 | 有哪些可复用的模型、特征集、工具、Agent、知识库 | `domains` `catalogs` `namespaces` `assets` | 先要有统一目录树和统一资产主表，才能跨类型搜索、浏览和归档 |
+| 版本治理 | 当前线上版本是什么，谁审批的，能否回滚 | `assets` `asset_versions` `model_version_details` `function_version_details` `feature_version_details` `agent_version_details` `model_version_aliases` | 资产身份和资产版本不是一回事，版本有独立审批、发布、回滚和别名切换生命周期 |
+| RAG / 知识库治理 | 某个 Agent 用了哪个知识库、哪个索引、哪个 Prompt/Tool | `volume_assets` `agent_assets` `agent_version_details` `function_assets` `relations` `external_bindings` | 知识库、Retriever、Agent、运行时绑定是不同对象，不能塞进一张表 |
+| 特征与模型治理 | 模型用了哪些特征，特征来自哪些表，线上离线是否一致 | `table_assets` `table_columns` `feature_set_assets` `feature_version_details` `model_assets` `model_version_details` `relations` | 表、特征集、模型都要成为独立资产，才能形成完整链路 |
+| Tool / Function 治理 | 谁能调用工具，工具有没有副作用，输入输出契约是什么 | `function_assets` `function_version_details` `grants` `policies` `policy_bindings` | Tool 不只是元数据对象，还是可执行能力，需要权限和策略单独治理 |
+| Agent 治理 | Agent 依赖哪些模型、工具、知识库，是否通过审批 | `agent_assets` `agent_version_details` `relations` `policies` `policy_bindings` `audit_logs` | Agent 是复合资产，既有自身配置，也有外部依赖和审批记录 |
+| 合规删除 / 影响分析 | 用户数据是否进入训练集、向量索引、模型、Agent | `relations` `asset_versions` `external_bindings` `audit_logs` | 要沿依赖图追踪传播路径，必须有边表和版本级关系 |
+| 审计与追责 | 谁改了 Prompt，谁发布了模型，谁绑定了线上服务 | `audit_logs` `asset_versions` `external_bindings` | 历史动作不是静态属性，需要单独的审计表 |
+| 系统联动 | 资产变更后如何通知搜索、图谱、审批系统 | `event_outbox` | 变更传播是异步事件，不应耦合在主表更新逻辑里 |
+
+### 8.2 为什么需要拆这么多表
+
+这套模型并不是“为了存元数据而拆表”，而是在把不同性质的治理问题拆开处理。
+
+#### 8.2.1 公共属性和类型属性不是一回事
+
+所有资产都有名称、owner、状态、标签，所以进入统一 `assets`。  
+但模型才有 `framework / algorithm / risk_level`，Feature Set 才有 `freshness_sla / entity_keys`，Agent 才有 `goal / interaction_mode / runtime_binding_ref`。  
+这些字段如果都塞进一个大 JSON，不利于查询、校验和治理，因此要拆到类型扩展表。
+
+#### 8.2.2 资产本体和资产版本不是一回事
+
+“客服知识库”是一个资产，但“2026-04-20 的知识库版本”才是具体发布对象。  
+“风控模型”是一个资产，但 `v3`、`v4` 才是审批、评测、上线和回滚的单位。  
+因此需要统一 `asset_versions`，以及模型、函数、特征、Agent 各自的版本明细表。
+
+#### 8.2.3 关系不是资产自己的属性
+
+血缘、依赖、使用、绑定、服务关系，本质上都是“资产和资产之间的一条边”，不是某个资产自己的字段。  
+因此需要单独的 `relations`，而不是把上游下游信息埋进 `assets.properties_json`。
+
+#### 8.2.4 权限和策略不是资产自己的属性
+
+“谁能执行某个 Tool”“某个 Agent 上线前必须审批”“某个 Feature Set 必须满足质量规则”，这些都不是写在资产表里就够了。  
+它们需要被独立查询、绑定、变更和审计，因此要有 `grants / policies / policy_bindings`。
+
+#### 8.2.5 审计和事件是时序信息，不是静态元数据
+
+“谁在什么时候改了 Prompt”“谁把模型 v4 发布到了 prod”“资产变更后要通知搜索索引刷新”都是时间序列上的动作，而不是当前快照。  
+因此需要 `audit_logs` 和 `event_outbox`。
+
+### 8.3 为什么血缘必须单独建 `relations`
+
+血缘不是“点”，而是“边”。
+
+- `assets / asset_versions` 管的是点：表、Feature Set、模型、Tool、Agent 及其版本
+- `relations` 管的是边：谁依赖谁、谁产出谁、谁读取谁、谁服务谁
+
+如果不单独建 `relations`，会立刻遇到以下问题：
+
+- 一个模型依赖多个特征集时，一对多关系难表达
+- 一个 Agent 同时依赖模型、Tool、知识库时，跨类型关系难表达
+- 无法表达版本级关系，例如“模型 v4 依赖特征集 v7”
+- 无法给关系本身附加属性，例如关系来源、备注、置信度、创建时间
+- 很难做上游下游遍历、影响分析、审计追踪和变更回溯
+
+因此，`relations` 的设计重点不只是“存一条关系”，而是支撑完整的依赖图分析能力。
+
+### 8.4 一个完整例子：企业知识库问答 Agent 的排障与影响分析
+
+下面用一个完整场景说明这些表如何一起工作。
+
+#### 8.4.1 业务背景
+
+公司有一个“客服政策问答 Agent”，用于回答客服关于退款、补贴、优惠券规则的问题。  
+某天业务反馈：Agent 回答的还是旧政策。
+
+平台需要回答以下问题：
+
+- 当前线上 Agent 是哪个版本
+- 它依赖了哪个知识库目录
+- 知识库最近一次更新时间是什么
+- 当前检索工具使用的是哪个向量索引
+- 向量索引是由哪个 Embedding 模型版本生成的
+- 最近是谁改了 Agent、Tool 或知识库绑定
+- 如果切换知识库版本，会影响哪些 Agent
+
+#### 8.4.2 资产登记方式
+
+这条链路上的对象会分别登记为不同资产：
+
+- `退款政策知识库`：登记为一个 `VOLUME / FILESET` 资产，扩展信息在 `volume_assets`
+- `知识向量化模型`：登记为一个 `MODEL` 资产，版本信息在 `asset_versions` 和 `model_version_details`
+- `政策知识检索工具`：登记为一个 `FUNCTION / TOOL` 资产，定义和运行细节在 `function_assets` 和 `function_version_details`
+- `客服政策问答 Agent`：登记为一个 `AGENT` 资产，运行配置在 `agent_assets` 和 `agent_version_details`
+
+其中：
+
+- 统一身份、名称、owner、状态在 `assets`
+- 当前线上版本在 `assets.current_version_id`
+- 具体版本快照在 `asset_versions`
+
+#### 8.4.3 资产之间的关系
+
+这些对象之间的关键关系可以记录在 `relations` 中，例如：
+
+- `政策知识检索工具 v3 USES 退款政策知识库 v8`
+- `政策知识检索工具 v3 USES 知识向量化模型 v2`
+- `客服政策问答 Agent v5 USES 政策知识检索工具 v3`
+- `客服政策问答 Agent v5 USES gpt-service-model v12`
+
+如果还需要表达实际运行落点，则通过 `external_bindings` 记录：
+
+- `政策知识检索工具 v3` 绑定到 `Milvus 集群 A / index policy_v8`
+- `gpt-service-model v12` 绑定到 `serving endpoint llm-prod-12`
+
+这里可以简洁理解为：
+
+- `政策知识检索工具 v3` 绑定到 `Milvus 集群 A / index policy_v8`
+  - 表示这个工具版本运行时实际检索的是哪个向量索引实例
+- `gpt-service-model v12` 绑定到 `serving endpoint llm-prod-12`
+  - 表示这个模型版本运行时实际由哪个在线推理服务实例提供能力
+
+也就是说：
+
+- `assets / asset_versions` 管“这个资产是什么版本”
+- `external_bindings` 管“这个版本实际跑在哪个外部系统实例上”
+
+对应的场景级关系图可以简化表示为：
+
+```mermaid
+graph LR
+    KB["退款政策知识库
+assets + volume_assets + asset_versions"] -->|USES via relations| RET["政策知识检索工具 v3
+assets + function_assets + function_version_details"]
+    EMB["知识向量化模型 v2
+assets + model_assets + model_version_details"] -->|USES via relations| RET
+    RET -->|USES via relations| AG["客服政策问答 Agent v5
+assets + agent_assets + agent_version_details"]
+    AG --> APP["客服工作台应用
+catalog consumer / app"]
+
+    RET -. runtime binding .-> IDX["Milvus index policy_v8
+external_bindings"]
+    AG -. model serving binding .-> LLM["llm-prod-12
+external_bindings"]
+```
+
+这张图表达的是：
+
+- 资产主信息统一进入 `assets`
+- 各类资产的类型语义进入各自扩展表
+- 版本和版本细节进入 `asset_versions` 与各类 `*_version_details`
+- 依赖边统一进入 `relations`
+- 实际运行落点统一进入 `external_bindings`
+
+#### 8.4.4 出现问题时怎么排查
+
+当业务说“Agent 回答的还是旧政策”时，排查路径大致如下：
+
+对应的查询路径可以简化表示为：
+
+```mermaid
+flowchart TD
+    Q1["1. 查 Agent 当前线上版本
+assets.current_version_id"] --> Q2["2. 查 Agent 版本快照
+asset_versions + agent_version_details"]
+    Q2 --> Q3["3. 查 Agent 依赖了哪些 Tool / Model / Knowledge
+relations"]
+    Q3 --> Q4["4. 查知识库目录与版本信息
+volume_assets + asset_versions"]
+    Q3 --> Q5["5. 查实际运行时绑定到了哪个索引/服务
+external_bindings"]
+    Q5 --> Q6["6. 查最近谁改过版本、关系或绑定
+audit_logs"]
+    Q4 --> Q7["定位问题属于版本未发布、关系未切换、索引未重建还是绑定未更新"]
+    Q6 --> Q7
+```
+
+1. 先查 `assets` 和 `asset_versions`
+
+- 找到“客服政策问答 Agent”这个资产
+- 确认 `current_version_id` 指向的是 `v5`
+- 查看 `agent_version_details`，确认当前版本的配置快照
+
+2. 再查 `relations`
+
+- 找到 `Agent v5 USES 政策知识检索工具 v3`
+- 再找到 `政策知识检索工具 v3 USES 退款政策知识库 v8`
+
+3. 再查 `volume_assets` 和相关版本信息
+
+- 确认知识库根目录 `root_uri`
+- 确认当前生效的是 `v8`
+- 检查知识库最近更新时间、对应文件集是否为新版政策目录
+
+4. 再查 `external_bindings`
+
+- 看 `政策知识检索工具 v3` 实际绑定的向量索引是不是 `policy_v8`
+- 如果绑定的还是 `policy_v7`，说明问题出在运行时绑定没有切换
+
+5. 最后查 `audit_logs`
+
+- 看最近是谁改了 Agent 版本
+- 谁改了 Tool 到知识库的关系
+- 谁改了外部索引绑定
+
+这时平台就能明确定位问题到底出在：
+
+- Agent 没发新版
+- Tool 还指向旧知识库
+- 外部向量索引绑定没切换
+- 知识库版本虽然更新了，但索引未重建
+
+#### 8.4.5 影响分析怎么做
+
+如果现在要把知识库从 `v8` 升级到 `v9`，平台还需要回答：
+
+- 哪些 Tool 正在依赖 `退款政策知识库 v8`
+- 哪些 Agent 又依赖这些 Tool
+- 哪些线上应用依赖这些 Agent
+
+这时只要从 `relations` 沿着边向下游遍历即可：
+
+`退款政策知识库 v8 -> 政策知识检索工具 v3 -> 客服政策问答 Agent v5 -> 客服工作台应用`
+
+这就是血缘和影响分析的最直接应用。
+
+#### 8.4.6 这个例子说明了什么
+
+这个例子可以看出：
+
+- `assets / asset_versions` 解决“对象是谁、当前生效哪个版本”
+- `volume_assets / function_assets / agent_assets / model_version_details` 解决“对象自己的强语义字段”
+- `relations` 解决“对象之间如何依赖”
+- `external_bindings` 解决“对象实际落在哪个外部运行实例上”
+- `audit_logs` 解决“谁改了什么”
+
+也就是说，只有这些表协同起来，Catalog Service 才能真正支撑 AI 场景下的发现、排障、回溯和影响分析。
+
+### 8.5 一个更完整的例子：高风险 Agent 的上线治理
+
+前面的例子重点展示了知识库、Tool、模型、Agent 之间的依赖和排障。  
+下面再给一个更完整的治理例子，重点说明 `policies / policy_bindings / grants / audit_logs` 是如何一起工作的。
+
+#### 8.5.1 业务背景
+
+公司准备上线一个“客户数据核验 Agent”，用于帮助客服核验客户身份、查询 CRM 信息并生成处理建议。  
+这个 Agent 的风险较高，因为它：
+
+- 依赖客户知识库
+- 会调用外部 CRM 查询工具
+- 可能接触敏感个人信息
+- 最终会在生产环境提供服务
+
+平台希望做到：
+
+- 只有授权客服组可以调用这个 Agent
+- Agent 发布到生产前必须经过审批
+- 高风险 Tool 只能被白名单 Agent 使用
+- 所有关键动作都留下审计记录
+
+#### 8.5.2 涉及的资产
+
+这一场景中的关键资产可以抽象为：
+
+- `客户核验知识库`：`VOLUME / FILESET`
+- `客户数据查询工具`：`FUNCTION / TOOL`
+- `客户数据核验 Agent`：`AGENT`
+- `身份识别模型`：`MODEL`
+
+这些对象仍然统一进入：
+
+- `assets`
+- `asset_versions`
+- 各自的 `*_assets / *_version_details`
+
+#### 8.5.3 依赖关系如何表达
+
+在 `relations` 中，可以表达如下关系：
+
+- `客户数据查询工具 v2 READS 客户核验知识库 v4`
+- `客户数据核验 Agent v7 USES 客户数据查询工具 v2`
+- `客户数据核验 Agent v7 USES 身份识别模型 v3`
+
+这部分回答的是：这个 Agent 依赖了哪些上游能力。
+
+#### 8.5.4 权限如何表达
+
+在 `grants` 中，可以表达谁能对哪些对象执行什么动作，例如：
+
+- `客服组 A` 对 `客户数据核验 Agent` 有 `EXECUTE`
+- `平台管理员角色` 对 `客户数据核验 Agent` 有 `PUBLISH`
+- `合规审核角色` 对 `客户数据核验 Agent v7` 有 `APPROVE`
+- `客服组 A` 对 `客户核验知识库` 有 `READ_METADATA`
+
+这部分回答的是：谁有权限做什么。
+
+#### 8.5.5 策略如何表达
+
+在 `policies` 中，可以定义规则内容，例如：
+
+- `agent_prod_publish_approval`
+  - 类型：`APPROVAL`
+  - 规则：生产发布前必须完成平台主管 + 合规审批
+
+- `high_risk_tool_whitelist_control`
+  - 类型：`RISK_CONTROL`
+  - 规则：高风险 Tool 仅允许白名单 Agent 使用
+
+- `pii_access_audit_policy`
+  - 类型：`COMPLIANCE`
+  - 规则：访问 PII 相关资产必须记录完整审计链路
+
+然后在 `policy_bindings` 中把它们绑定到具体对象：
+
+- 将 `agent_prod_publish_approval` 绑定到 `客户数据核验 Agent`
+- 将 `high_risk_tool_whitelist_control` 绑定到 `客户数据查询工具`
+- 将 `pii_access_audit_policy` 绑定到 `客户核验知识库`
+
+这部分回答的是：这些资产必须遵守什么规则。
+
+#### 8.5.6 上线时实际发生什么
+
+当团队准备把 `客户数据核验 Agent v7` 发布到生产时，平台会同时检查：
+
+1. `relations`
+
+- 它依赖了哪些 Tool、模型、知识库
+- 是否接入了高风险外部系统
+
+2. `grants`
+
+- 当前操作者是否拥有 `PUBLISH` 权限
+- 审批人是否拥有 `APPROVE` 权限
+
+3. `policy_bindings`
+
+- 这个 Agent 是否绑定了生产审批策略
+- 它依赖的 Tool 是否绑定了高风险控制策略
+- 它访问的知识库是否绑定了合规审计策略
+
+4. `external_bindings`
+
+- Agent 版本是否已绑定生产 runtime
+- 模型版本是否已绑定线上 serving endpoint
+
+只有这些条件都满足，平台才允许完成上线。
+
+#### 8.5.7 审计如何落地
+
+整个过程中，`audit_logs` 会记录关键动作，例如：
+
+- 谁创建了 `客户数据核验 Agent v7`
+- 谁修改了它依赖的 Tool
+- 谁绑定了生产审批策略
+- 谁批准了这次发布
+- 谁最终把它发布到生产 runtime
+
+这样后续如果出现问题，就可以清楚回放：
+
+- 版本是谁改的
+- 依赖是谁切的
+- 审批链路是否完整
+- 发布动作是否合规
+
+#### 8.5.8 这个完整例子说明了什么
+
+这个例子把几类横切能力串起来了：
+
+- `relations` 负责表达依赖链
+- `grants` 负责表达谁有权限
+- `policies` 负责定义治理规则
+- `policy_bindings` 负责把规则挂到具体资产或版本上
+- `external_bindings` 负责表达实际运行落点
+- `audit_logs` 负责记录全过程
+
+也就是说，AI 时代的 Catalog Service 不只是“知道有哪些资产”，而是要能把依赖、权限、策略、运行时和审计串成一条完整治理链。
+
+---
+
+## 9. 推荐演进路径
 
 建议分阶段演进，而不是一次性做成大而全系统。
 
@@ -863,7 +1495,7 @@ erDiagram
 
 ---
 
-## 9. 结论
+## 10. 结论
 
 如果目标是 AI 时代统一治理非表资产的 Catalog Service，那么更合适的数据模型方向不是继续围绕“多对象分散建表”演进，而是建立统一资产主干模型。
 
