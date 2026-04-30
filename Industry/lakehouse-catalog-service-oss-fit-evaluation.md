@@ -30,7 +30,7 @@
 |------|--------------------|--------------------------|
 | Gravitino | 多 catalog 联邦、connector 体系、Fileset / Model catalog、统一入口治理 | catalog-of-catalogs、外部 backend、资产语义分散 |
 | Polaris | Iceberg REST Catalog、安全、RBAC、policy、credential vending、生产级 Iceberg 服务端实践 | Iceberg-first、Generic Table 语义薄、非通用版本内核 |
-| Unity Catalog OSS | 多资产治理目录、table/file/function/model 统一治理形态、AI 资产管理经验 | UC API / metastore 边界、非 branch-aware 资产内核 |
+| Unity Catalog OSS | 多资产治理目录、table/file/function/model 统一治理形态、AI 资产管理经验 | 三层治理对象模型、非统一 AssetVersion / CommitOperation 内核 |
 | Nessie | Git-like branch/tag/commit/version-store、乐观冲突控制、跨表一致视图 | Git4Data 强、多资产和多格式 content model 窄 |
 
 因此，合理策略是：
@@ -159,7 +159,57 @@ Catalog Service 可以处理外部系统的存量数据，但不等于要采用�
 
 ## 二、目标 Catalog Service 的核心架构要求
 
-### 2.1 协议优先，不等于放弃统一治理
+### 2.1 请求链路：协议入口最终受核心模型约束
+
+Catalog Service 最核心的工作链路，是把北向协议消息转换成内部领域操作，再通过自有存储维护元数据状态。协议入口可以是 Iceberg REST、Lance REST Namespace 或 Unified API；真正决定系统能否持续演进的，是 adapter 与后端存储之间的 core data model。
+
+```mermaid
+flowchart LR
+  subgraph N["北向调用方"]
+    I["Iceberg 引擎 / SDK<br/>Iceberg REST: create / load / commit"]
+    L["Lance / LanceDB 客户端<br/>Lance REST: declare / describe / version"]
+    U["治理平台 / 管理后台<br/>Unified API: browse / tag / policy"]
+  end
+
+  subgraph CS["Catalog Service"]
+    R["Router / Auth<br/>路由、认证、租户、限流"]
+    A["Protocol Adapters<br/>Iceberg / Lance / Unified"]
+    D["Domain Services<br/>命名、提交、权限、审计"]
+    M["Core Data Model<br/>Namespace / Asset / AssetVersion<br/>future Ref / Commit / CommitOperation"]
+    S["CatalogStore<br/>事务、CAS、查询、迁移"]
+  end
+
+  DB[("PostgreSQL<br/>catalog-owned metadata")]
+  OBJ[("Object Storage<br/>data files / format metadata")]
+
+  I --> R
+  L --> R
+  U --> R
+  R --> A
+  A --> D
+  D --> M
+  M --> S
+  S --> DB
+  D -.->|"metadata pointer / location / credential"| OBJ
+
+  M -.->|"决定可否自然扩展"| X["多资产<br/>table / model / feature / vector index"]
+  M -.->|"决定可否自然扩展"| G["Git4Data<br/>branch / tag / diff / merge / rollback"]
+  M -.->|"决定可否自然扩展"| Q["Semantic-aware<br/>schema / lineage / glossary / embedding"]
+
+  BAD["如果 core model 以单一表格式或三层对象为中心<br/>后续补统一版本和提交语义会穿透 adapter、domain、store、DDL、迁移和兼容 API"]
+  BAD -.->|"高成本重构"| A
+  BAD -.->|"高成本重构"| D
+  BAD -.->|"高成本重构"| S
+  BAD -.->|"高成本重构"| DB
+```
+
+这张图要表达三点：
+
+1. 北向协议兼容本身不是充分差异。无论是 UC、Polaris、Gravitino，还是目标 Catalog Service，都会把某种协议请求映射为内部对象和存储操作。
+2. 真正关键的是内部模型是否把 `Asset`、`AssetVersion`、未来 `CommitOperation` 作为稳定内核。如果模型只围绕某一种表格式、某一种三层命名对象或某一种外部 backend 组织，后续新增资产类型、统一版本、Git4Data 和 Semantic-aware 都会变成跨层重构。
+3. 后端数据库不是简单的配置库，而是 Catalog Service 的元数据 source of truth。它保存的 schema 直接反映 core model；core model 设计不合理时，改动会同时影响协议适配、领域服务、存储接口、DDL、迁移脚本、兼容 API 和历史数据。
+
+### 2.2 协议优先，不等于放弃统一治理
 
 目标架构需要同时提供两类入口：
 
@@ -170,7 +220,7 @@ Catalog Service 可以处理外部系统的存量数据，但不等于要采用�
 
 这样的好处是：引擎仍然使用熟悉的生态协议，平台侧又能获得统一治理视图。反过来，如果从一开始把所有格式都塞进一个私有 API，会增加引擎接入成本，也容易丢失表格式自身的 transaction、snapshot、version 等语义。
 
-### 2.2 核心模型应让各类资产平等
+### 2.3 核心模型应让各类资产平等
 
 目标 Catalog Service 不应停留在 table catalog，也不应让 Iceberg、Lance、Model 或 Feature 中任何一类资产成为隐含中心。更合适的核心模型是：
 
@@ -199,7 +249,7 @@ asset_versions                    # 所有资产共享的版本身份、排序�
 
 这种模式表达的是：通用主表负责"这是一个什么资产"，扩展表负责"这种资产有哪些专有字段"。表资产不会污染模型资产，模型资产也不会反过来约束表资产；未来新增资产类型时，优先增加扩展表和 adapter，而不是重写核心身份模型。
 
-### 2.3 最小自包含存储
+### 2.4 最小自包含存储
 
 "最小自包含"不是说功能少，而是说 Catalog 元数据所有权边界清晰：
 
@@ -211,7 +261,7 @@ asset_versions                    # 所有资产共享的版本身份、排序�
 
 也就是说，外部系统可以迁入或同步元数据，但核心读写路径应由目标 Catalog Service 自己控制。这样一致性、版本、治理和未来 Git4Data 语义才不会被多个外部 backend 的差异打散。
 
-### 2.4 Git4Data 与 Semantic-aware 是核心模型问题
+### 2.5 Git4Data 与 Semantic-aware 是核心模型问题
 
 Git4Data 不是单表版本号，也不是 Iceberg 表内 snapshot reference。它需要整个 Catalog 以 version store 方式工作：
 
@@ -245,7 +295,7 @@ Semantic-aware 也不是简单加一个搜索服务。它需要把以下信息�
 
 如果底层模型没有统一 Asset、AssetVersion 和 CommitOperation，后续 Git4Data 与 Semantic-aware 很容易变成外挂索引或侵入式重构。
 
-### 2.5 基础工程要求与轻量工程边界
+### 2.6 基础工程要求与轻量工程边界
 
 "轻量工程边界"不是说能力目标轻，而是说基础工程要求要通过清晰、克制的运行时边界实现。Catalog Service 作为生产元数据控制面，首先要满足高可用、一致性、可恢复、可观测和安全基线；在这个前提下，系统边界应保持简单：
 
@@ -404,7 +454,7 @@ Polaris 也不是"只支持 Iceberg"。官方 Generic Table 文档说明 generic
 
 **结论**：Polaris 是 Iceberg catalog 的重要参考对象，但不是多格式、多资产、Git4Data Catalog Service 的合适底座。
 
-### 3.3 Unity Catalog OSS：适合多资产治理参考，不适合协议优先版本内核
+### 3.3 Unity Catalog OSS：适合多资产治理参考，不适合统一版本内核
 
 Unity Catalog OSS 的项目画像可以概括为：
 
@@ -412,7 +462,7 @@ Unity Catalog OSS 的项目画像可以概括为：
 |------|------|
 | 架构目标 | 构建 Open, Multimodal Catalog for Data & AI，用统一接口治理数据与 AI 资产 |
 | 核心抽象 | `Catalog -> Schema -> assets` 的三层命名空间，资产包括 tables、volumes/files、functions、models 等 |
-| 能力边界 | 多资产治理形态最完整，兼容 HMS API 和 Iceberg REST；核心入口仍是 UC REST API 与 UC metastore |
+| 能力边界 | 多资产治理形态最完整，兼容 HMS API 和 Iceberg REST；核心模型仍是 UC 三层命名与治理 metastore |
 | 演进取向 | 持续补齐权限、治理、lineage、monitoring、feature tables、data monitors、sharing、federation 等平台能力 |
 | 最适合借鉴 | 多资产治理目录、模型/文件/函数管理、AI 资产治理、权限与审计接口设计 |
 
@@ -429,13 +479,19 @@ Catalog
 - 目标是建设数据与 AI 资产治理目录；
 - 需要 table、volume/file、function、model 等统一管理体验；
 - 希望参考模型注册、文件治理、权限和审计接口；
-- 生态入口可以围绕 UC API 和兼容层展开。
+- 生态入口可以围绕 UC API、HMS API、Iceberg REST 等多种入口展开。
 
-但它仍不适合作为目标 Catalog Service 的底座，原因不是资产类型不够，而是系统边界不同。
+但它仍不适合作为目标 Catalog Service 的底座，原因不是资产类型不够，也不是缺少原生协议兼容入口，而是核心模型与未来版本内核目标不同。
 
-**第一，UC 的核心入口是 Unity Catalog API，而目标 Catalog Service 是标准协议优先。**
+**第一，北向原生协议兼容不是主要差异。**
 
-目标 Catalog Service 希望 Iceberg 客户端走 Iceberg REST Catalog，Lance 客户端走 Lance REST Namespace。Unified API 是管理面和发现面，不替代原生协议。Unity Catalog 的核心是自己的 UC REST API，并提供 HMS / Iceberg REST 兼容能力；Lance 数据可以通过 Volume 或 Lance Namespace implementation 进入 Unity Catalog，其中 Lance Namespace implementation 会把 Lance table 映射为 UC external table。但这仍然是围绕 UC REST API 与三层命名模型展开，而不是把 Lance REST Namespace 作为 UC server 的原生一等协议入口。
+如果只看 Iceberg REST 这类北向入口，Unity Catalog OSS 与目标 Catalog Service 是同类能力：UC 官方文档说明其开源实现兼容 Apache Hive metastore API 和 Apache Iceberg REST catalog API；目标 Catalog Service 也希望 Iceberg 客户端继续走 Iceberg REST Catalog，而不是改用私有统一 API。
+
+因此，差异也不应简单写成"UC 会把协议请求映射到自己的 core data model，而目标 Catalog Service 会映射到自己的 core data model"。这件事两者都会做。真正需要比较的是：内部模型是否把多格式资产的版本、提交、冲突检测和跨资产变更作为一等语义。
+
+在 UC 中，核心对象是 `Catalog -> Schema -> Table/Volume/Function/Model`。它可以承载多资产治理，也可以通过兼容接口接收外部协议请求；但其版本语义仍分散在不同对象类型里，例如 table 的存储位置和格式属性、model 的 model version、volume/file 的路径语义等。目标 Catalog Service 的要求更具体：无论入口来自 Iceberg REST、Lance REST Namespace 还是 Unified API，最终都要能落到统一的 `AssetVersion`，并进一步支持 catalog-level `CommitOperation`、branch/tag、diff/merge/rollback。
+
+Lance 场景可以说明这个差异。Lance Unity Catalog integration 不是把 Lance 变成 UC 原生格式，而是把 Lance table 表示为 UC 的 external table：`table_type` 设为 `EXTERNAL`，`storage_location` 指向 Lance table root，`properties` 中用 `table_type=lance` 标记；官方集成文档还说明 UC 不原生识别 `LANCE` data source format，因此 `data_source_format` 设为 `TEXT`，实际格式依赖属性判断。这个能力很适合把 Lance table 登记进 UC 治理目录，但它不是一个共享的、格式无关的 AssetVersion / CommitOperation 内核。
 
 **第二，UC 的多资产模型不是通用 AssetVersion kernel。**
 
@@ -453,7 +509,7 @@ UC 有 registered model 和 model version，但这是 ML model registry 的生�
 
 官方 roadmap 中 row filters、column masks、ABAC、lineage、feature tables、data monitors 等仍有待完成项。若目标是未来治理能力，可以参考 UC；但不应为了未来治理能力，提前承接一个较重的 JVM 多资产平台和其 API 约束。
 
-**结论**：Unity Catalog OSS 是多资产治理形态的重要参考，但不是协议优先、自包含、可演进 Git4Data/Semantic-aware 内核的合适底座。
+**结论**：Unity Catalog OSS 是多资产治理形态的重要参考；它在北向原生协议兼容上与目标 Catalog Service 并不矛盾，但其三层治理对象模型不是统一 AssetVersion / CommitOperation 内核的合适底座。
 
 ### 3.4 Nessie：最值得参考的 Git4Data 对象，但多资产通用性不足
 
@@ -505,7 +561,7 @@ Nessie 对目标 Catalog Service 的参考价值很高：
 | 多表格式 | 多 connector / backend | Iceberg 强，Generic Table beta | 多格式表与 UC 资产 | 主要 Iceberg | 原生协议 adapter + Unified 治理公共子集 |
 | 非表资产 | Fileset / Model catalog | 非一等重点 | Volume / Function / Model | 非重点 | 主表 + 类型扩展表 |
 | 存储边界 | entity store + 外部 backend | Polaris metastore | UC metastore | version store | 自包含 source of truth + 外部导入/同步 |
-| 标准协议策略 | 统一 API + 兼容/辅助服务 | Iceberg REST 强 | UC API + 兼容层 | Nessie API + Iceberg REST | 各生态标准协议一等实现，Unified API 只做公共治理面 |
+| 标准协议策略 | 统一 API + 兼容/辅助服务 | Iceberg REST 强 | UC API + HMS/Iceberg REST 兼容入口 | Nessie API + Iceberg REST | 各生态标准协议一等实现，Unified API 只做公共治理面 |
 | Git4Data | 不是核心模型 | 不是核心模型 | 不是核心模型 | 核心能力 | 作为 core 演进目标 |
 | Semantic-aware | 可做治理增强，但资产分散 | 资产语义面偏窄 | 多资产语义较好，但不 branch-aware | 版本强，语义面窄 | 统一资产图上自然扩展 |
 | 技术栈 | Java/JVM | Java/Quarkus | Java/sbt 为主 | Java/Quarkus | 可选择 Rust 等轻量服务端实现 |
@@ -531,7 +587,7 @@ Nessie 对目标 Catalog Service 的参考价值很高：
 |------|------------------|----------|----------|
 | Gravitino | 多 connector 与联邦接入适合接管存量系统，统一入口价值高 | 运行时需要理解 entity store、catalog provider、外部 backend 的多层边界 | 适合存量 catalog 统一入口；若目标是自包含内核，迁入后仍要重建 Asset/Version 语义 |
 | Polaris | Iceberg REST、RBAC、policy、credential vending 与 Iceberg 生产路径贴近 | 非 Iceberg 能力主要是登记/发现，不是完整多资产内核 | 适合 Iceberg-first 场景；迁出到通用多资产模型时需补 AssetVersion 与非表资产 |
-| Unity Catalog OSS | 多资产治理形态完整，AI/data governance 方向清晰 | UC API / metastore 边界较重，开源版治理 roadmap 仍在演进 | 适合借鉴治理对象与 API；若要协议优先和 Git4Data，需要重映射 tables/volumes/functions/models |
+| Unity Catalog OSS | 多资产治理形态完整，AI/data governance 方向清晰，HMS/Iceberg REST 兼容入口有生态价值 | 三层治理对象模型不是统一 AssetVersion / CommitOperation 内核，开源版治理 roadmap 仍在演进 | 适合借鉴治理对象与 API；若要统一版本内核和 Git4Data，需要重映射 tables/volumes/functions/models |
 | Nessie | Git-like version store 成熟，是 Git4Data 最好的参考对象 | content model 主要面向 Iceberg tables/views，多资产表达不足 | 适合 Iceberg Git-like 场景；迁入多资产 Catalog Service 时需要扩展 content model 或转译为 Asset/CommitOperation |
 
 因此，运维和生态维度不会推翻前文结论：这些项目可以降低局部工程风险，但不应因为社区成熟或某一类生产实践成熟，就把不匹配的核心抽象放进目标 Catalog Service 的核心路径。
@@ -632,7 +688,7 @@ Quasar 与开源项目的关系应是"借鉴成熟模块，而不是继承不匹
 |----------|---------------------|------------------------|
 | Gravitino | 联邦接入思路、Fileset/Model catalog、connector 经验 | catalog-of-catalogs 作为核心 source of truth |
 | Polaris | Iceberg REST、RBAC/policy、credential vending、生产级服务端实践 | Iceberg-first entity model 和过薄的 Generic Table 语义 |
-| Unity Catalog OSS | 多资产治理、模型/文件/函数管理、治理 API 经验 | UC API / metastore 作为核心边界 |
+| Unity Catalog OSS | 多资产治理、模型/文件/函数管理、治理 API 与协议兼容经验 | UC 三层对象模型作为统一版本内核 |
 | Nessie | branch/tag/commit、expectedHash、merge/replay、version-store 机制 | 主要面向 Iceberg Table/View 的 content model |
 
 因此，Quasar 的合理路径是：自研 core data model 和 storage boundary，在协议 adapter、治理接口和 Git4Data 机制上吸收开源项目的成熟经验。
@@ -700,4 +756,4 @@ Quasar 与开源项目的关系应是"借鉴成熟模块，而不是继承不匹
 
 ---
 
-*文档版本：v4.0*
+*文档版本：v4.3*
