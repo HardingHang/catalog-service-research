@@ -165,42 +165,13 @@ Catalog Service 最核心的工作链路，是把北向协议消息转换成内�
 
 ```mermaid
 flowchart LR
-  subgraph N["北向调用方"]
-    I["Iceberg 引擎 / SDK<br/>Iceberg REST: create / load / commit"]
-    L["Lance / LanceDB 客户端<br/>Lance REST: declare / describe / version"]
-    U["治理平台 / 管理后台<br/>Unified API: browse / tag / policy"]
-  end
+  N["北向协议入口<br/>Iceberg REST / Lance REST / Unified API"]
+  A["Protocol Adapter<br/>协议消息 → 内部操作"]
+  M["Core Data Model<br/>Namespace / Asset / AssetVersion<br/>future Commit / CommitOperation"]
+  S["CatalogStore trait<br/>事务、CAS、查询"]
+  DB[("自有存储<br/>PostgreSQL<br/>source of truth")]
 
-  subgraph CS["Catalog Service"]
-    R["Router / Auth<br/>路由、认证、租户、限流"]
-    A["Protocol Adapters<br/>Iceberg / Lance / Unified"]
-    D["Domain Services<br/>命名、提交、权限、审计"]
-    M["Core Data Model<br/>Namespace / Asset / AssetVersion<br/>future Ref / Commit / CommitOperation"]
-    S["CatalogStore<br/>事务、CAS、查询、迁移"]
-  end
-
-  DB[("PostgreSQL<br/>catalog-owned metadata")]
-  OBJ[("Object Storage<br/>data files / format metadata")]
-
-  I --> R
-  L --> R
-  U --> R
-  R --> A
-  A --> D
-  D --> M
-  M --> S
-  S --> DB
-  D -.->|"metadata pointer / location / credential"| OBJ
-
-  M -.->|"决定可否自然扩展"| X["多资产<br/>table / model / feature / vector index"]
-  M -.->|"决定可否自然扩展"| G["Git4Data<br/>branch / tag / diff / merge / rollback"]
-  M -.->|"决定可否自然扩展"| Q["Semantic-aware<br/>schema / lineage / glossary / embedding"]
-
-  BAD["如果 core model 以单一表格式或三层对象为中心<br/>后续补统一版本和提交语义会穿透 adapter、domain、store、DDL、迁移和兼容 API"]
-  BAD -.->|"高成本重构"| A
-  BAD -.->|"高成本重构"| D
-  BAD -.->|"高成本重构"| S
-  BAD -.->|"高成本重构"| DB
+  N --> A --> M --> S --> DB
 ```
 
 这张图要表达三点：
