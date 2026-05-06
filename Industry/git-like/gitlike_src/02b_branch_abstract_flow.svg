@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="620" viewBox="0 0 1180 620" role="img" aria-label="branch 抽象流程">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .title{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:30px;font-weight:700;fill:#0f172a}
+      .h{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:22px;font-weight:700;fill:#0f172a}
+      .s{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:16px;fill:#475569}
+      .mono{font-family:Consolas,"Microsoft YaHei",monospace;font-size:17px;fill:#1e293b}
+      .ref{fill:#eff6ff;stroke:#60a5fa;stroke-width:2;rx:10}
+      .obj{fill:#ecfdf5;stroke:#34d399;stroke-width:2;rx:10}
+      .panel{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:10}
+      .line{stroke:#334155;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+      .dash{stroke:#64748b;stroke-width:2;stroke-dasharray:7 6;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1180" height="620" fill="#f8fafc"/>
+  <text x="48" y="58" class="title">Branch 抽象流程：复制指针</text>
+
+  <rect x="90" y="160" width="280" height="105" class="ref"/>
+  <text x="120" y="202" class="h">Before</text>
+  <text x="120" y="238" class="mono">main -> c100</text>
+
+  <rect x="465" y="200" width="150" height="76" class="obj"/>
+  <text x="505" y="247" class="mono">c100</text>
+  <path d="M370 238 L465 238" class="line"/>
+
+  <rect x="760" y="140" width="310" height="155" class="ref"/>
+  <text x="790" y="182" class="h">After</text>
+  <text x="790" y="220" class="mono">main -> c100</text>
+  <text x="790" y="258" class="mono">qa   -> c100</text>
+  <path d="M615 238 L760 238" class="line"/>
+
+  <rect x="275" y="400" width="650" height="92" class="panel"/>
+  <text x="310" y="438" class="s">创建 branch 只新增 reference。</text>
+  <text x="310" y="470" class="s">对象图与数据文件都不复制。</text>
+</svg>

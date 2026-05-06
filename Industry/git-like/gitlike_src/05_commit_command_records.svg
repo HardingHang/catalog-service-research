@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="760" viewBox="0 0 1320 760" role="img" aria-label="commit 命令记录变化">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .title{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:30px;font-weight:700;fill:#0f172a}
+      .h{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:22px;font-weight:700;fill:#0f172a}
+      .s{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:16px;fill:#475569}
+      .mono{font-family:Consolas,"Microsoft YaHei",monospace;font-size:17px;fill:#1e293b}
+      .ref{fill:#eff6ff;stroke:#60a5fa;stroke-width:2;rx:10}
+      .obj{fill:#ecfdf5;stroke:#34d399;stroke-width:2;rx:10}
+      .idx{fill:#fffbeb;stroke:#f59e0b;stroke-width:2;rx:10}
+      .ok{fill:#f0fdf4;stroke:#22c55e;stroke-width:2;rx:10}
+      .line{stroke:#334155;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+      .dash{stroke:#64748b;stroke-width:2;stroke-dasharray:7 6;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1320" height="760" fill="#f8fafc"/>
+  <text x="48" y="58" class="title">命令 1：commit 到 main</text>
+
+  <rect x="70" y="125" width="310" height="165" class="ref"/>
+  <text x="100" y="168" class="h">refs2 before</text>
+  <text x="100" y="212" class="mono">main.pointer = c100</text>
+  <text x="100" y="244" class="mono">prev_ptr = []</text>
+
+  <rect x="70" y="455" width="310" height="170" class="ok"/>
+  <text x="100" y="498" class="h">refs2 after</text>
+  <text x="100" y="542" class="mono">main.pointer = c101</text>
+  <text x="100" y="574" class="mono">prev_ptr = [c100]</text>
+
+  <rect x="520" y="125" width="270" height="132" class="obj"/>
+  <text x="550" y="168" class="h">ContentValueObj</text>
+  <text x="550" y="212" class="mono">cv_orders_v43</text>
+
+  <rect x="520" y="315" width="270" height="132" class="obj"/>
+  <text x="550" y="358" class="h">CommitObj</text>
+  <text x="550" y="402" class="mono">c101.parent = c100</text>
+
+  <rect x="520" y="505" width="270" height="132" class="idx"/>
+  <text x="550" y="548" class="h">Index</text>
+  <text x="550" y="592" class="mono">orders -> cv43</text>
+
+  <rect x="930" y="250" width="280" height="160" class="ok"/>
+  <text x="960" y="294" class="h">CAS</text>
+  <text x="960" y="338" class="mono">expected = c100</text>
+  <text x="960" y="370" class="mono">newHead  = c101</text>
+
+  <path d="M380 208 L520 191" class="dash"/>
+  <path d="M655 257 L655 315" class="line"/>
+  <path d="M655 447 L655 505" class="line"/>
+  <path d="M790 381 L930 330" class="line"/>
+  <path d="M930 360 C760 520 550 548 380 540" class="line"/>
+  <text x="520" y="700" class="s">CAS 后 main 可见新 HEAD</text>
+</svg>

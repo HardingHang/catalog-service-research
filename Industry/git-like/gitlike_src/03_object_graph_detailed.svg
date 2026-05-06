@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-label="refs2 objs2 对象关系详细图">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .title{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:30px;font-weight:700;fill:#0f172a}
+      .h{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:22px;font-weight:700;fill:#0f172a}
+      .s{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:16px;fill:#475569}
+      .mono{font-family:Consolas,"Microsoft YaHei",monospace;font-size:17px;fill:#1e293b}
+      .ref{fill:#eff6ff;stroke:#60a5fa;stroke-width:2;rx:10}
+      .row{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:10}
+      .commit{fill:#ecfdf5;stroke:#34d399;stroke-width:2;rx:10}
+      .index{fill:#fffbeb;stroke:#f59e0b;stroke-width:2;rx:10}
+      .value{fill:#f5f3ff;stroke:#8b5cf6;stroke-width:2;rx:10}
+      .line{stroke:#334155;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+      .dash{stroke:#64748b;stroke-width:2;stroke-dasharray:7 6;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1440" height="900" fill="#f8fafc"/>
+  <text x="52" y="60" class="title">refs2 / objs2 与对象图的物理联系</text>
+
+  <rect x="70" y="130" width="310" height="285" class="ref"/>
+  <text x="100" y="174" class="h">refs2</text>
+  <text x="100" y="220" class="mono">repo = r1</text>
+  <text x="100" y="252" class="mono">ref_name = main</text>
+  <text x="100" y="284" class="mono">pointer = c101</text>
+  <text x="100" y="316" class="mono">prev_ptr = [c100]</text>
+  <text x="100" y="348" class="mono">deleted = false</text>
+
+  <rect x="520" y="130" width="320" height="285" class="row"/>
+  <text x="550" y="174" class="h">objs2 row</text>
+  <text x="550" y="220" class="mono">obj_id = c101</text>
+  <text x="550" y="252" class="mono">obj_type = c</text>
+  <text x="550" y="284" class="mono">obj_value = CommitObj</text>
+  <text x="550" y="316" class="mono">obj_ref = ...</text>
+  <path d="M380 284 L520 284" class="line"/>
+
+  <rect x="1000" y="120" width="350" height="315" class="commit"/>
+  <text x="1030" y="164" class="h">CommitObj c101</text>
+  <text x="1030" y="210" class="mono">tail[0] = c100</text>
+  <text x="1030" y="242" class="mono">secondaryParents = [...]</text>
+  <text x="1030" y="274" class="mono">incrementalIndex</text>
+  <text x="1030" y="306" class="mono">referenceIndex = idx_full</text>
+  <text x="1030" y="338" class="mono">message / headers</text>
+  <text x="1030" y="370" class="mono">seq / created</text>
+  <path d="M840 284 L1000 284" class="line"/>
+
+  <rect x="110" y="605" width="260" height="160" class="index"/>
+  <text x="140" y="650" class="h">IndexObj</text>
+  <text x="140" y="696" class="mono">obj_type = i</text>
+  <text x="140" y="728" class="mono">index = StoreIndex</text>
+
+  <rect x="470" y="605" width="295" height="160" class="index"/>
+  <text x="500" y="650" class="h">IndexSegmentsObj</text>
+  <text x="500" y="696" class="mono">obj_type = I</text>
+  <text x="500" y="728" class="mono">stripe -> IndexObj</text>
+
+  <rect x="860" y="605" width="260" height="160" class="value"/>
+  <text x="890" y="650" class="h">CommitOp</text>
+  <text x="890" y="696" class="mono">key = sales.orders</text>
+  <text x="890" y="728" class="mono">value = cv43</text>
+
+  <rect x="1190" y="605" width="210" height="160" class="value"/>
+  <text x="1218" y="650" class="h">ContentValue</text>
+  <text x="1218" y="696" class="mono">obj_id = cv43</text>
+  <text x="1218" y="728" class="mono">data = table state</text>
+
+  <path d="M1175 435 C1060 510 780 560 620 605" class="dash"/>
+  <path d="M620 765 C505 800 355 800 240 765" class="line"/>
+  <path d="M1175 435 C1135 520 1050 570 990 605" class="dash"/>
+  <path d="M1120 685 L1190 685" class="line"/>
+  <text x="560" y="560" class="s">reference index</text>
+  <text x="980" y="560" class="s">incremental index</text>
+</svg>

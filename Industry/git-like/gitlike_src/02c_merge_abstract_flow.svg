@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="700" viewBox="0 0 1280 700" role="img" aria-label="merge 抽象流程">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .title{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:30px;font-weight:700;fill:#0f172a}
+      .h{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:22px;font-weight:700;fill:#0f172a}
+      .s{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:16px;fill:#475569}
+      .mono{font-family:Consolas,"Microsoft YaHei",monospace;font-size:17px;fill:#1e293b}
+      .ref{fill:#eff6ff;stroke:#60a5fa;stroke-width:2;rx:10}
+      .obj{fill:#ecfdf5;stroke:#34d399;stroke-width:2;rx:10}
+      .warn{fill:#fffbeb;stroke:#f59e0b;stroke-width:2;rx:10}
+      .line{stroke:#334155;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+      .dash{stroke:#64748b;stroke-width:2;stroke-dasharray:7 6;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1280" height="700" fill="#f8fafc"/>
+  <text x="48" y="58" class="title">Merge 抽象流程：replay 到 target</text>
+
+  <rect x="85" y="160" width="120" height="60" class="obj"/>
+  <text x="119" y="198" class="mono">c100</text>
+  <rect x="300" y="95" width="120" height="60" class="obj"/>
+  <text x="334" y="133" class="mono">q101</text>
+  <rect x="500" y="95" width="120" height="60" class="obj"/>
+  <text x="534" y="133" class="mono">q102</text>
+  <path d="M205 190 C245 150 270 130 300 125" class="dash"/>
+  <path d="M420 125 L500 125" class="dash"/>
+
+  <rect x="300" y="315" width="120" height="60" class="obj"/>
+  <text x="334" y="353" class="mono">m101</text>
+  <rect x="500" y="315" width="120" height="60" class="obj"/>
+  <text x="534" y="353" class="mono">m102</text>
+  <path d="M205 190 C250 270 280 330 300 345" class="line"/>
+  <path d="M420 345 L500 345" class="line"/>
+
+  <rect x="760" y="135" width="210" height="90" class="warn"/>
+  <text x="790" y="172" class="h">replay</text>
+  <text x="790" y="202" class="s">q101/q102 ops</text>
+  <path d="M620 125 C690 135 725 160 760 180" class="dash"/>
+  <path d="M760 202 C705 270 655 320 620 345" class="line"/>
+
+  <rect x="850" y="420" width="260" height="85" class="ref"/>
+  <text x="880" y="455" class="h">target ref CAS</text>
+  <text x="880" y="486" class="mono">main -> m102</text>
+  <path d="M620 345 C720 385 800 420 850 462" class="line"/>
+
+  <text x="90" y="570" class="s">虚线：source；实线：target replay。</text>
+</svg>

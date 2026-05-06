@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-label="Nessie refs 指向 objs 对象图">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .title{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:30px;font-weight:700;fill:#0f172a}
+      .h{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:23px;font-weight:700;fill:#0f172a}
+      .t{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:18px;fill:#334155}
+      .s{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:16px;fill:#475569}
+      .mono{font-family:Consolas,"Microsoft YaHei",monospace;font-size:18px;fill:#1e293b}
+      .panel{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:10}
+      .ref{fill:#eff6ff;stroke:#60a5fa;stroke-width:2;rx:10}
+      .commit{fill:#ecfdf5;stroke:#34d399;stroke-width:2;rx:10}
+      .idx{fill:#fffbeb;stroke:#f59e0b;stroke-width:2;rx:10}
+      .val{fill:#f5f3ff;stroke:#8b5cf6;stroke-width:2;rx:10}
+      .line{stroke:#334155;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+      .dash{stroke:#64748b;stroke-width:2;stroke-dasharray:7 6;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <rect width="1280" height="720" fill="#f8fafc"/>
+  <text x="48" y="56" class="title">Nessie 抽象模型：refs 指向 objs 对象图</text>
+
+  <rect x="70" y="130" width="300" height="360" class="ref"/>
+  <text x="100" y="174" class="h">refs</text>
+  <text x="100" y="230" class="mono">main -> c102</text>
+  <text x="100" y="280" class="mono">dev  -> c101</text>
+  <text x="100" y="330" class="mono">tag  -> t050</text>
+  <text x="100" y="410" class="s">可变命名入口</text>
+  <text x="100" y="444" class="s">最终通过 CAS 更新</text>
+
+  <rect x="520" y="120" width="680" height="460" class="panel"/>
+  <text x="552" y="164" class="h">objs</text>
+
+  <rect x="590" y="250" width="120" height="64" class="commit"/>
+  <text x="626" y="288" class="mono">c100</text>
+  <rect x="770" y="250" width="120" height="64" class="commit"/>
+  <text x="806" y="288" class="mono">c101</text>
+  <rect x="950" y="250" width="120" height="64" class="commit"/>
+  <text x="986" y="288" class="mono">c102</text>
+  <path d="M710 282 L770 282" class="line"/>
+  <path d="M890 282 L950 282" class="line"/>
+
+  <rect x="770" y="420" width="120" height="64" class="idx"/>
+  <text x="804" y="458" class="mono">idx9</text>
+  <rect x="950" y="420" width="120" height="64" class="val"/>
+  <text x="984" y="458" class="mono">cv43</text>
+
+  <path d="M370 230 C435 220 500 245 590 270" class="line"/>
+  <path d="M370 280 C485 290 610 292 770 282" class="line"/>
+  <path d="M1010 314 L850 420" class="dash"/>
+  <path d="M890 452 L950 452" class="dash"/>
+
+  <text x="606" y="338" class="s">commit chain</text>
+  <text x="748" y="520" class="s">index lookup</text>
+  <text x="934" y="520" class="s">content state</text>
+</svg>

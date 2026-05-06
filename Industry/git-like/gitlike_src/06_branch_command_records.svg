@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="720" viewBox="0 0 1320 720" role="img" aria-label="create branch 命令记录变化">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .title{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:30px;font-weight:700;fill:#0f172a}
+      .h{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:22px;font-weight:700;fill:#0f172a}
+      .s{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:16px;fill:#475569}
+      .mono{font-family:Consolas,"Microsoft YaHei",monospace;font-size:17px;fill:#1e293b}
+      .ref{fill:#eff6ff;stroke:#60a5fa;stroke-width:2;rx:10}
+      .obj{fill:#ecfdf5;stroke:#34d399;stroke-width:2;rx:10}
+      .ok{fill:#f0fdf4;stroke:#22c55e;stroke-width:2;rx:10}
+      .line{stroke:#334155;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+      .dash{stroke:#64748b;stroke-width:2;stroke-dasharray:7 6;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1320" height="720" fill="#f8fafc"/>
+  <text x="48" y="58" class="title">命令 2：create branch qa from main</text>
+
+  <rect x="80" y="135" width="330" height="170" class="ref"/>
+  <text x="110" y="178" class="h">refs2 before</text>
+  <text x="110" y="225" class="mono">main.pointer = c100</text>
+
+  <rect x="80" y="420" width="330" height="190" class="ok"/>
+  <text x="110" y="463" class="h">refs2 after</text>
+  <text x="110" y="510" class="mono">main.pointer = c100</text>
+  <text x="110" y="545" class="mono">qa.pointer   = c100</text>
+
+  <rect x="580" y="210" width="180" height="80" class="obj"/>
+  <text x="632" y="260" class="mono">c100</text>
+  <rect x="930" y="180" width="250" height="120" class="obj"/>
+  <text x="960" y="225" class="h">objs2</text>
+  <text x="960" y="264" class="mono">无业务对象复制</text>
+
+  <path d="M410 225 L580 250" class="line"/>
+  <path d="M410 545 C500 492 565 385 642 290" class="line"/>
+  <path d="M760 250 L930 240" class="dash"/>
+
+  <text x="550" y="520" class="s">新增 reference 记录</text>
+  <text x="550" y="555" class="s">指向已有 HEAD</text>
+</svg>

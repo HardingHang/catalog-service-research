@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="620" viewBox="0 0 1180 620" role="img" aria-label="Iceberg 单表分支标签模型">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .title{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:30px;font-weight:700;fill:#0f172a}
+      .h{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:22px;font-weight:700;fill:#0f172a}
+      .t{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:18px;fill:#334155}
+      .s{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:16px;fill:#475569}
+      .mono{font-family:Consolas,"Microsoft YaHei",monospace;font-size:17px;fill:#1e293b}
+      .panel{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:10}
+      .meta{fill:#eff6ff;stroke:#60a5fa;stroke-width:2;rx:10}
+      .snap{fill:#ecfdf5;stroke:#34d399;stroke-width:2;rx:10}
+      .ref{fill:#fefce8;stroke:#eab308;stroke-width:2;rx:10}
+      .line{stroke:#334155;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+      .dash{stroke:#64748b;stroke-width:2;stroke-dasharray:7 6;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <rect width="1180" height="620" fill="#f8fafc"/>
+  <text x="44" y="54" class="title">Iceberg 原生单表 Branch / Tag</text>
+
+  <rect x="56" y="110" width="310" height="390" class="meta"/>
+  <text x="86" y="150" class="h">Table Metadata</text>
+  <text x="86" y="195" class="mono">current-snapshot-id = s3</text>
+  <text x="86" y="232" class="mono">snapshots = [s1..s4]</text>
+  <text x="86" y="269" class="mono">snapshot-log = ...</text>
+  <text x="86" y="306" class="mono">refs = map</text>
+  <text x="86" y="370" class="s">单张表内的 metadata 文件</text>
+  <text x="86" y="404" class="s">提交点：metadata pointer swap</text>
+
+  <rect x="500" y="140" width="110" height="58" class="snap"/>
+  <text x="537" y="176" class="mono">s1</text>
+  <rect x="665" y="140" width="110" height="58" class="snap"/>
+  <text x="702" y="176" class="mono">s2</text>
+  <rect x="830" y="140" width="110" height="58" class="snap"/>
+  <text x="867" y="176" class="mono">s3</text>
+  <rect x="830" y="310" width="110" height="58" class="snap"/>
+  <text x="867" y="346" class="mono">s4</text>
+  <path d="M610 169 L665 169" class="line"/>
+  <path d="M775 169 L830 169" class="line"/>
+  <path d="M720 198 C740 275 790 330 830 339" class="dash"/>
+
+  <rect x="990" y="112" width="140" height="58" class="ref"/>
+  <text x="1016" y="148" class="mono">main -> s3</text>
+  <path d="M990 142 L940 163" class="line"/>
+
+  <rect x="990" y="260" width="140" height="58" class="ref"/>
+  <text x="1013" y="296" class="mono">audit -> s4</text>
+  <path d="M990 289 L940 330" class="line"/>
+
+  <rect x="990" y="420" width="140" height="58" class="ref"/>
+  <text x="1014" y="456" class="mono">tag -> s2</text>
+  <path d="M990 449 C900 410 792 250 740 198" class="line"/>
+
+  <rect x="450" y="468" width="360" height="82" class="panel"/>
+  <text x="480" y="504" class="t">单表 snapshot refs</text>
+  <text x="480" y="532" class="s">branch 可移动，tag 用于锚定</text>
+</svg>

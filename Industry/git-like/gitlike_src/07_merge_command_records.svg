@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1360" height="780" viewBox="0 0 1360 780" role="img" aria-label="merge 命令记录变化">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .title{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:30px;font-weight:700;fill:#0f172a}
+      .h{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:22px;font-weight:700;fill:#0f172a}
+      .s{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:16px;fill:#475569}
+      .mono{font-family:Consolas,"Microsoft YaHei",monospace;font-size:17px;fill:#1e293b}
+      .ref{fill:#eff6ff;stroke:#60a5fa;stroke-width:2;rx:10}
+      .obj{fill:#ecfdf5;stroke:#34d399;stroke-width:2;rx:10}
+      .ok{fill:#f0fdf4;stroke:#22c55e;stroke-width:2;rx:10}
+      .warn{fill:#fffbeb;stroke:#f59e0b;stroke-width:2;rx:10}
+      .line{stroke:#334155;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+      .dash{stroke:#64748b;stroke-width:2;stroke-dasharray:7 6;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1360" height="780" fill="#f8fafc"/>
+  <text x="48" y="58" class="title">命令 3：merge qa into main</text>
+
+  <rect x="70" y="125" width="310" height="175" class="ref"/>
+  <text x="100" y="168" class="h">refs2 before</text>
+  <text x="100" y="214" class="mono">main.pointer = c100</text>
+  <text x="100" y="248" class="mono">qa.pointer   = q102</text>
+
+  <rect x="70" y="480" width="310" height="175" class="ok"/>
+  <text x="100" y="523" class="h">refs2 after</text>
+  <text x="100" y="569" class="mono">main.pointer = m102</text>
+  <text x="100" y="603" class="mono">qa.pointer   = q102</text>
+
+  <rect x="500" y="160" width="115" height="58" class="obj"/>
+  <text x="533" y="196" class="mono">c100</text>
+  <rect x="675" y="110" width="115" height="58" class="obj"/>
+  <text x="708" y="146" class="mono">q101</text>
+  <rect x="850" y="110" width="115" height="58" class="obj"/>
+  <text x="883" y="146" class="mono">q102</text>
+  <path d="M615 189 C640 165 658 150 675 139" class="dash"/>
+  <path d="M790 139 L850 139" class="dash"/>
+
+  <rect x="675" y="350" width="115" height="58" class="obj"/>
+  <text x="708" y="386" class="mono">m101</text>
+  <rect x="850" y="350" width="115" height="58" class="obj"/>
+  <text x="883" y="386" class="mono">m102</text>
+  <path d="M615 189 C650 268 666 320 675 379" class="line"/>
+  <path d="M790 379 L850 379" class="line"/>
+
+  <rect x="1080" y="245" width="210" height="115" class="warn"/>
+  <text x="1110" y="289" class="h">replay</text>
+  <text x="1110" y="326" class="mono">q101/q102 ops</text>
+  <path d="M965 139 C1030 170 1062 213 1080 270" class="dash"/>
+  <path d="M1080 332 C1030 366 1010 378 965 379" class="line"/>
+
+  <path d="M965 379 C790 510 565 575 380 568" class="line"/>
+  <text x="500" y="700" class="s">replay 后 CAS 更新 main</text>
+</svg>
