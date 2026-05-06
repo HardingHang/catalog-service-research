@@ -438,6 +438,60 @@ Lance REST API 明显比统一 Gravitino API 更窄，但保留了 Lance 自身�
 4. `LanceTableOperations` 会先执行 `Dataset.create(...)` 创建底层 Lance dataset，再调用 `super.createTable(...)` 写入 Gravitino 统一表元数据。
 5. 因此，这条 `Lance REST` 建表路径不仅创建 Lance 原生对象，也会在同一步骤中写入统一 `table_meta`。
 
+### 4.5 catalog backend 桥接能力
+
+这里需要区分两种容易混淆的“联邦”：
+
+1. 跨 catalog 查询联邦：例如 Spark/Trino 在查询层 join 多个 catalog。
+2. 已有 catalog backend 桥接：Gravitino 创建 catalog 时，不自己保存该格式的全部原生元数据，而是把操作转发给已有的外部 catalog backend。
+
+如果按第二种理解，`Polaris Iceberg catalog` 这类场景的判断是：对于 `provider=lakehouse-iceberg` 的 catalog，可以通过 `catalog-backend=rest` 把 Gravitino catalog 桥接到一个 Iceberg REST Catalog 兼容后端；如果 Polaris 暴露的是标准 Iceberg REST Catalog API，并且认证、warehouse、URI 等配置能被 Iceberg 客户端识别，那么它属于这一类可桥接对象。
+
+典型创建方式如下：
+
+```bash
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "polaris_iceberg",
+    "type": "RELATIONAL",
+    "provider": "lakehouse-iceberg",
+    "comment": "Bridge to an existing Iceberg REST catalog",
+    "properties": {
+      "catalog-backend": "rest",
+      "uri": "http://polaris-host:8181/api/catalog",
+      "warehouse": "example_warehouse"
+    }
+  }' \
+  http://localhost:8090/api/metalakes/test/catalogs
+```
+
+这个能力不是所有 Gravitino catalog 类型都统一支持，而是 provider-specific：
+
+| Gravitino provider / 类型         | 是否有 catalog backend 桥接 | 已看到的 backend 范围                      | 说明                                                         |
+| --------------------------------- | --------------------------- | ------------------------------------------ | ------------------------------------------------------------ |
+| `lakehouse-iceberg`               | 是                          | `hive`、`jdbc`、`memory`、`rest`、`custom` | `rest` 可桥接 Iceberg REST Catalog 兼容后端；`custom` 可指定自定义 Iceberg catalog 实现 |
+| `lakehouse-paimon`                | 否                          | `filesystem`、`jdbc`、`hive`、`rest`       | 这是 Paimon 自己的 catalog backend 语义，不等同于 Iceberg REST，也不能用来桥接 Polaris Iceberg catalog |
+| `lakehouse-hudi`                  | 否                         | `hms`                                      | 当前实现只看到 Hive Metastore backend                        |
+| `hive`、`jdbc-*`                  | 不是同一类 backend 桥接     | 直接连接对应系统                           | 它们本身就是 Gravitino catalog provider，不是通过 `catalog-backend=rest` 再桥接另一层 catalog |
+| `fileset`、`messaging`、`model`   | 否                          | 不适用                                     | 这些对象类型不走 Iceberg/Paimon 这类表格式 catalog backend 模型 |
+| `lance` / Generic Lakehouse Lance | 否                          | 不适用                                     | Lance 路径更像 Gravitino 元数据与 Lance dataset 协同，不是通用已有 catalog backend 桥接 |
+
+因此，更准确的结论是：
+
+```text
+Gravitino supports existing catalog backend bridging for specific providers.
+The Iceberg provider supports REST backend, so it can bridge Iceberg REST-compatible catalogs.
+This is not a universal capability shared by all catalog types.
+```
+
+还要注意一层方向差异：
+
+1. Gravitino 作为 Iceberg REST Server 时，可以把 Gravitino 中多个 Iceberg catalog 动态暴露给 Iceberg REST 客户端。
+2. Gravitino 创建 `lakehouse-iceberg` catalog 且设置 `catalog-backend=rest` 时，是 Gravitino 作为客户端/适配层去访问一个已有 Iceberg REST catalog backend。
+
+前者是“Gravitino 对外提供 Iceberg REST 协议面”，后者是“Gravitino 向下桥接已有 Iceberg REST catalog”。Polaris 这类已有 Iceberg REST catalog 属于后者。
+
 ## 5. 不同协议对比
 
 本章结论：统一 REST 覆盖面最广，但不能替代 `Iceberg REST` 和 `Lance REST` 的格式原生语义；三者是分层互补，而不是一套兼容另一套。
