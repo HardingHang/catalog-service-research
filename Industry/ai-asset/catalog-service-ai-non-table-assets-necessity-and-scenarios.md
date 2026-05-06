@@ -1,6 +1,16 @@
 # AI 时代 Catalog Service 引入非表资产管理的必要性与业务场景
 
+更新日期：2026-05-06
+
 ## 执行摘要
+
+本文只回答“为什么要做”和“哪些场景最值得做”，不展开完整数据模型、REST API 与工程落地细节。
+
+对应专题文档请参考：
+
+- [catalog-service-ai-non-table-assets-data-model-design.md](./catalog-service-ai-non-table-assets-data-model-design.md)
+- [catalog-service-non-table-assets-rest-api-design.md](./catalog-service-non-table-assets-rest-api-design.md)
+- [catalog-service-ai-non-table-assets-technical-solution.md](./catalog-service-ai-non-table-assets-technical-solution.md)
 
 本文聚焦一个核心问题：为什么 AI 时代的 Catalog Service 不能再只管理表资产，而需要将模型、特征、文件集、函数、工具、Agent 等非表资产纳入统一治理范围。
 
@@ -119,9 +129,29 @@
 
 ### 1.3 未引入非表资产前的实现方式与局限
 
-需要说明的是，在 Catalog Service 尚未引入非表资产管理之前，这些业务场景并不是完全没有被管理，而是以“分散管理”的方式落在多个专业系统中。
+在 Catalog Service 尚未统一纳入非表资产之前，这些资产通常不是“没人管理”，而是分散在不同专业系统里分别管理。
 
-典型状态通常如下：
+可以先用下面这张总览表理解当前常见现状：
+
+| 资产类型 | 常见管理位置 | 主要管理内容 | 典型局限 |
+|---|---|---|---|
+| `table / view / column` | 传统 Catalog、Hive Metastore、Unity Catalog、湖仓元数据服务 | 命名空间、schema、权限、表血缘、基础搜索 | 只能覆盖结构化数据对象 |
+| `volume / fileset / knowledge base` | 对象存储、文件系统、文档平台、数据集目录 | 路径、目录、存储权限、生命周期 | 不知道被哪些模型、工具、Agent 使用 |
+| `model` | Model Registry、实验平台、模型平台 | 模型版本、工件、指标、发布记录 | 很难统一看到上游数据和下游 Agent |
+| `feature / feature_set` | Feature Store、离线任务平台、流处理平台 | 特征定义、实体键、刷新方式、在线/离线存储 | 跨系统依赖不完整，治理口径不统一 |
+| `function / tool` | 代码仓库、服务注册中心、运行时平台、插件平台 | 函数定义、运行方式、配置、调用入口 | 资产发现弱，权限和审计通常在应用层分散实现 |
+| `prompt / workflow / agent` | 代码仓库、配置中心、Agent Runtime、应用数据库 | Prompt 模板、编排定义、版本配置、运行参数 | 往往缺少统一资产视图、统一依赖图和统一发布治理 |
+
+这种模式在单系统内通常可以工作，但一旦需要回答跨系统问题，就会迅速暴露问题，例如：
+
+- 某个 Agent 依赖了哪些模型、Tool 和知识库
+- 某个模型版本变更会影响哪些下游应用
+- 某个知识目录更新后，哪些索引、检索 Tool 和 Agent 需要同步切换
+- 某个高风险 Tool 是否被未经审批的 Agent 使用
+
+因此，“引入统一 Catalog 管理非表资产”的本质，不是替换这些专业系统，而是在这些系统之上增加一个统一资产视图和统一治理控制面。
+
+下面分别展开各类资产在未统一纳入 Catalog 之前的典型管理方式与局限。
 
 #### 1.3.1 表资产仍由传统 Catalog 管理
 

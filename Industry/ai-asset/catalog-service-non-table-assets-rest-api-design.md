@@ -1,6 +1,16 @@
 # 非表资产 Catalog Service REST API 设计建议
 
+更新日期：2026-05-06
+
 ## 执行摘要
+
+本文只回答 API 设计问题，不重复展开必要性论证、完整表设计和工程实施方案。
+
+对应专题文档请参考：
+
+- [catalog-service-ai-non-table-assets-necessity-and-scenarios.md](./catalog-service-ai-non-table-assets-necessity-and-scenarios.md)
+- [catalog-service-ai-non-table-assets-data-model-design.md](./catalog-service-ai-non-table-assets-data-model-design.md)
+- [catalog-service-ai-non-table-assets-technical-solution.md](./catalog-service-ai-non-table-assets-technical-solution.md)
 
 本文聚焦一个具体问题：在 Catalog Service 纳入 `volume/fileset`、`model`、`function/tool`、`feature_set`、`agent` 等非表资产之后，REST API 应如何设计，才能同时满足面向用户的对象使用体验与面向平台的统一治理能力。
 
@@ -980,7 +990,7 @@ components:
 - 统一版本、关系、权限、策略能力可以横向复用
 - 对外对象语义清晰，不会因为统一抽象而完全失去类型感
 
-## 9.2 注意点
+## 11.2 注意点
 
 - 不建议让统一 `/assets` 完全取代类型化对象 API，否则用户体验会变差
 - 不建议让每个对象自己定义一套版本、审批、关系接口，否则治理能力会重新分散

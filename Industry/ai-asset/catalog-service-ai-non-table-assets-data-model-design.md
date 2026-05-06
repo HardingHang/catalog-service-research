@@ -1,6 +1,16 @@
 # Catalog Service 统一治理非表资产的数据模型设计方案
 
+更新日期：2026-05-06
+
 ## 执行摘要
+
+本文只回答“怎么建模”，不重复展开必要性长篇分析，也不展开完整 API 和工程实施细节。
+
+对应专题文档请参考：
+
+- [catalog-service-ai-non-table-assets-necessity-and-scenarios.md](./catalog-service-ai-non-table-assets-necessity-and-scenarios.md)
+- [catalog-service-non-table-assets-rest-api-design.md](./catalog-service-non-table-assets-rest-api-design.md)
+- [catalog-service-ai-non-table-assets-technical-solution.md](./catalog-service-ai-non-table-assets-technical-solution.md)
 
 本文聚焦 AI 时代 Catalog Service 统一治理非表资产的数据模型设计方案。
 
@@ -841,7 +851,7 @@ erDiagram
 | `priority` | 优先级 |
 | `created_at` | 绑定创建时间 |
 
-`policies` 与 `policy_bindings`` 的典型使用方式可以简化理解为：
+`policies` 与 ``policy_bindings`` 的典型使用方式可以简化理解为：
 
 - 在 `policies` 中定义“规则是什么”
 - 在 `policy_bindings` 中定义“这条规则作用到谁身上”
@@ -1063,6 +1073,23 @@ erDiagram
 
 ### 8.1 场景与表映射矩阵
 
+#### 8.1.1 AI 资产类型实现矩阵
+
+这张表用于回答“首期每种 AI 资产到底怎么实现”。
+
+| 资产类型 | 首期是否支持 | 统一主表 | 扩展表 | 是否版本化 | 典型关系 | 典型外部绑定 | 首期不承接 |
+|---|---|---|---|---|---|---|---|
+| `TABLE` | 是 | `assets` | `table_assets`、`table_columns` | 可选 | `DERIVED_FROM`、`READS`、`WRITES` | 表格式元数据、存储位置 | 不替代表格式引擎自身 snapshot 管理 |
+| `VOLUME/FILESET` | 是 | `assets` | `volume_assets` | 可选 | `READS`、`BOUND_TO`、`USES` | 对象存储路径、知识库目录、索引目录 | 不承接文件内容管理与文件内语义解析 |
+| `MODEL` | 是 | `assets` | `model_assets`、`model_version_details`、`model_version_uris`、`model_version_aliases` | 是 | `USES`、`DERIVED_FROM`、`SERVES` | Model Registry、Serving Endpoint、Artifact Storage | 不承接训练执行与推理服务本身 |
+| `FUNCTION/TOOL` | 是 | `assets` | `function_assets`、`function_version_details` | 是 | `READS`、`WRITES`、`USES`、`BOUND_TO` | Container Runtime、HTTP Service、MCP Runtime | 不承接通用执行平台能力 |
+| `FEATURE_SET` | 是 | `assets` | `feature_set_assets`、`feature_version_details` | 是 | `DERIVED_FROM`、`USES` | Feature Serving、Materialization Target | 不承接完整 Feature Store Serving 引擎 |
+| `AGENT` | 是 | `assets` | `agent_assets`、`agent_version_details` | 是 | `USES`、`READS`、`BOUND_TO` | Agent Runtime、Memory Service、Policy Service | 不承接对话执行、长流程调度与运行时状态管理 |
+| `PROMPT` | 否，建议二期 | 未来复用 `assets` | 独立 `prompt_assets` | 建议支持 | `USES`、`GUARDS` | Prompt Store、Config Center | 首期可作为 `agent_version_details` 的引用字段存在 |
+| `WORKFLOW` | 否，建议二期 | 未来复用 `assets` | 独立 `workflow_assets` | 建议支持 | `USES`、`CALLS` | Workflow Runtime | 首期可内嵌在 `agent_version_details.workflow_graph_json` |
+| `EVALUATION` | 否，建议二期 | 未来复用 `assets` | 独立 `evaluation_assets` | 建议支持 | `EVALUATES` | Evaluation Runner | 首期仅保留评测摘要字段 |
+| `DATASET` | 否，建议二期 | 未来复用 `assets` | 独立 `dataset_assets` | 建议支持 | `DERIVED_FROM`、`USED_BY` | Dataset Storage | 首期由 `TABLE` 或 `VOLUME` 间接表达 |
+
 | 业务场景 | 需要回答的问题 | 主要表 | 为什么需要这些表 |
 |---|---|---|---|
 | 统一资产发现 | 有哪些可复用的模型、特征集、工具、Agent、知识库 | `domains` `catalogs` `namespaces` `assets` | 先要有统一目录树和统一资产主表，才能跨类型搜索、浏览和归档 |
@@ -1106,6 +1133,38 @@ erDiagram
 “谁在什么时候改了 Prompt”“谁把模型 v4 发布到了 prod”“资产变更后要通知搜索索引刷新”都是时间序列上的动作，而不是当前快照。  
 因此需要 `audit_logs` 和 `event_outbox`。
 
+#### 8.2.6 首期资产边界需要显式写清楚
+
+实践里最容易失控的，不是“不会建模”，而是“资产边界不清楚”。
+
+建议首期把下面几条明确写进设计基线：
+
+- `MODEL` 管治理版本，不管训练执行
+- `FUNCTION/TOOL` 管定义、权限和 binding，不管执行引擎
+- `FEATURE_SET` 管来源、质量、刷新和 serving 元数据，不管完整特征服务
+- `AGENT` 管 spec、依赖、风险和发布，不管运行时会话状态
+- `VOLUME/FILESET` 管目录级资产，不管文件内容编目与文件内语义解析
+
+这样做的好处是：
+
+- 研发边界清楚
+- 测试范围可控
+- 不会把 Catalog 演进成大而全执行平台
+
+#### 8.2.7 每类资产都需要最小实现定义
+
+建议每个首期资产至少都具备以下最小实现要素：
+
+- 统一 `asset_id`
+- 清晰的 `asset_type`
+- 最小扩展表
+- 是否版本化的明确结论
+- 默认状态机
+- 默认支持的关系类型
+- 可选的外部绑定类型
+
+如果某个资产还说不清这 7 件事，通常说明还不适合进入首期范围。
+
 ### 8.3 为什么血缘必须单独建 `relations`
 
 血缘不是“点”，而是“边”。
@@ -1135,7 +1194,7 @@ erDiagram
 平台需要回答以下问题：
 
 - 当前线上 Agent 是哪个版本
-- 它依赖了哪个知识库目录
+- 它依赖了哪个知识库目录 
 - 知识库最近一次更新时间是什么
 - 当前检索工具使用的是哪个向量索引
 - 向量索引是由哪个 Embedding 模型版本生成的
@@ -1495,7 +1554,61 @@ audit_logs"]
 
 ---
 
-## 10. 结论
+## 10. 权限与状态机矩阵
+
+这一节的目标不是定义最终全部规则，而是给研发、测试和评审一版首期可执行口径。
+
+### 10.1 权限动作矩阵
+
+| 资产类型 | READ_METADATA | READ_DATA / READ_FILES | WRITE_METADATA | EXECUTE | APPROVE | PUBLISH | BIND_RUNTIME | GOVERN |
+|---|---|---|---|---|---|---|---|---|
+| `TABLE` | 是 | 是 | 是 | 否 | 可选 | 可选 | 否 | 是 |
+| `VOLUME/FILESET` | 是 | 是 | 是 | 否 | 可选 | 可选 | 可选 | 是 |
+| `MODEL` | 是 | 可选 | 是 | 否 | 是 | 是 | 是 | 是 |
+| `FUNCTION/TOOL` | 是 | 可选 | 是 | 是 | 是 | 是 | 是 | 是 |
+| `FEATURE_SET` | 是 | 可选 | 是 | 否 | 是 | 是 | 是 | 是 |
+| `AGENT` | 是 | 否 | 是 | 是 | 是 | 是 | 是 | 是 |
+
+说明如下：
+
+- `READ_DATA / READ_FILES` 适用于真正承载数据或文件内容的资产
+- `EXECUTE` 主要适用于 `FUNCTION/TOOL` 和 `AGENT`
+- `BIND_RUNTIME` 用于绑定 serving、runtime、index 或 registry
+- `APPROVE`、`PUBLISH` 是否强制启用，可按环境或风险等级控制
+
+### 10.2 状态机矩阵
+
+| 资产类型 | 是否必须版本化 | 推荐状态 | 必须审批后发布 | 是否支持回滚 | 备注 |
+|---|---|---|---|---|---|
+| `TABLE` | 否或可选 | `ACTIVE/DEPRECATED` | 否 | 可选 | 更依赖底层表格式自身版本语义 |
+| `VOLUME/FILESET` | 可选 | `ACTIVE/DEPRECATED` 或 `DRAFT/APPROVED/PUBLISHED` | 知识库场景建议是 | 可选 | 目录切换频繁时建议版本化 |
+| `MODEL` | 是 | `DRAFT/APPROVED/PUBLISHED/DEPRECATED` | 是 | 是 | 推荐强版本治理 |
+| `FUNCTION/TOOL` | 是 | `DRAFT/APPROVED/PUBLISHED/DEPRECATED` | 高风险 Tool 建议是 | 是 | 需结合副作用等级控制 |
+| `FEATURE_SET` | 是 | `DRAFT/APPROVED/PUBLISHED/DEPRECATED` | 建议是 | 是 | 方便特征回退与服务切换 |
+| `AGENT` | 是 | `DRAFT/APPROVED/PUBLISHED/DEPRECATED` | 是 | 是 | 最需要明确审批与评测门禁 |
+
+### 10.3 推荐发布前置条件矩阵
+
+| 资产类型 | 发布前最少要检查什么 |
+|---|---|
+| `MODEL` | 工件可访问、评测摘要完整、外部注册中心可绑定 |
+| `FUNCTION/TOOL` | 输入输出 schema 完整、runtime 约束清晰、副作用等级已标注 |
+| `FEATURE_SET` | 来源定义完整、freshness/quality 规则存在、serving binding 可解析 |
+| `AGENT` | 依赖模型/工具/知识源完整、风险等级明确、审批策略与护栏存在 |
+
+### 10.4 推荐测试覆盖矩阵
+
+| 测试维度 | MODEL | FUNCTION/TOOL | FEATURE_SET | AGENT |
+|---|---|---|---|---|
+| 资产创建 | 是 | 是 | 是 | 是 |
+| 版本创建 | 是 | 是 | 是 | 是 |
+| 状态流转 | 是 | 是 | 是 | 是 |
+| 关系登记 | 是 | 是 | 是 | 是 |
+| 权限校验 | 是 | 是 | 是 | 是 |
+| 绑定校验 | 是 | 是 | 是 | 是 |
+| 回滚校验 | 是 | 是 | 是 | 是 |
+
+## 11. 结论
 
 如果目标是 AI 时代统一治理非表资产的 Catalog Service，那么更合适的数据模型方向不是继续围绕“多对象分散建表”演进，而是建立统一资产主干模型。
 
