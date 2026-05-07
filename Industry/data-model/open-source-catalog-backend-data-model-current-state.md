@@ -1,4 +1,4 @@
-# Open Source Catalog Backend Data Model Current State
+# 开源 Catalog 后端 Data Model 现状分析
 
 本文整理 `Unity Catalog OSS`、`Apache Gravitino`、`Apache Polaris` 三个开源 catalog 项目的后端 data model 设计，重点不是 API 层对象定义，而是这些对象在后端如何落库、如何组织关系、如何处理扩展字段、版本、权限，以及如何表达多格式和多 provider 差异。
 
@@ -6,27 +6,25 @@
 
 - `Industry/data-model/catalog-backend-storage-fields.md`
 
-## 1. 阅读这篇文档时应该关注什么
+## 1. 如何阅读本文
 
-对比这三类系统时，最值得关注的是五个问题：
+这篇文档不是逐表抄 schema，而是要回答三个更重要的问题：
 
-1. 核心对象是按类型分别建表，还是统一进一张实体表。
-2. 可变元数据是直接覆盖，还是单独做版本化存储。
-3. 多格式差异是放在 `catalog/provider` 层隔离，还是放在资产对象层表达。
-4. 权限、policy、credential 这类控制面对象，是嵌进业务对象，还是独立关系建模。
-5. 如果要自研 catalog service，哪些设计适合直接借鉴，哪些只适合特定场景。
+1. 这三个开源项目分别代表了哪一类后端 data model 路线。
+2. 如果要自研 catalog service，哪些设计选择是关键分歧点。
+3. 哪些能力值得借鉴，哪些实现只适合特定系统边界。
 
-## 2. 一页结论
+因此，阅读时建议重点看下面五个判断维度：
 
-先给出压缩版结论：
+1. 资产对象是“各类型主表”，还是“统一主实体表”。
+2. 元数据是“保存当前状态”，还是“把演进过程做成版本模型”。
+3. 格式差异是主要放在 `catalog/provider` 层，还是主要放在资产对象层。
+4. 权限、policy、credential 是附属能力，还是控制面核心模型。
+5. 该项目更适合借鉴“对象模型”“版本化能力”“联邦接入”，还是“控制面关系建模”。
 
-| 项目 | 后端模型风格 | 资产建模方式 | 格式隔离方式 | 适合借鉴的点 |
-| --- | --- | --- | --- | --- |
-| Unity Catalog OSS | 资源类型拆表 + 共享扩展属性表 | 各类型主表 | 主要靠资产表字段区分 | 多资产目录、结构清晰、查询直观 |
-| Apache Gravitino | 类型主表 + 版本表 + provider 联邦 | 各类型主表，强调版本化 | `catalog/provider` 先隔离，再由对象层补充 | 多 provider 联邦、schema evolution、治理对象体系 |
-| Apache Polaris | 统一实体表 + 类型系统 + 关系表 | 通用主实体表 | 主要靠 subtype 和 properties 区分 | Iceberg REST catalog、统一 RBAC/policy/control plane |
+## 2. 执行摘要
 
-如果把三者的差异再压缩成一句话：
+如果只看结论，可以先记住下面三句话：
 
 ```text
 Unity Catalog:
@@ -44,17 +42,24 @@ Polaris:
   -> grants / policy / auth via relation tables
 ```
 
-这三句话可以这样理解：
+对应的最短理解是：
 
-- `Unity Catalog` 强调“按对象类型直接拆表”，先把 catalog、schema、table、column、volume、function、model 这些核心对象分别落到独立表中，因此它最像传统关系型元数据仓，优势是结构直观、查询清晰。
-- `Gravitino` 强调“对象身份”和“对象内容”分离，先用 `*_meta` 表保存对象是谁、属于哪一层、当前版本是什么，再用 `*_version` 和明细表保存对象当前长什么样，因此它天然更适合版本化元数据、多 provider 联邦和 schema evolution。
-- `Polaris` 强调“统一实体模型”，先把大多数对象都放进 `entities`，再通过 `type_code`、`sub_type_code` 和关系表表达对象差异、授权、policy 和认证，因此它最适合控制面能力强、统一 RBAC/policy 导向的 catalog service。
+- `Unity Catalog`：先按资源拆开，强调对象分表和结构清晰。
+- `Gravitino`：先按身份和版本拆开，强调版本化和多 provider 联邦。
+- `Polaris`：先把对象统一起来，再靠类型系统和关系建模区分，强调控制面能力。
 
-如果再进一步压缩成一句判断：
+如果换成更适合做方案判断的对比，可以压缩成下面这张表：
 
-- `Unity Catalog` 先按资源拆开
-- `Gravitino` 先按身份和版本拆开
-- `Polaris` 先把对象统一起来，再靠类型系统和关系建模区分
+| 项目 | 一句话定位 | 资产模型 | 格式隔离 | 最值得借鉴 |
+| --- | --- | --- | --- | --- |
+| Unity Catalog OSS | 面向多资产目录的强类型分表模型 | 各类型主表 | 主要靠资产对象字段 | 对象层次清晰、查询直观、易排障 |
+| Apache Gravitino | 面向联邦和演进的版本化元数据模型 | 各类型主表 + 版本表 | `catalog/provider` 先隔离，再由对象层补充 | provider 边界、schema evolution、版本化能力 |
+| Apache Polaris | 面向控制面的统一实体模型 | 统一主实体表 | 主要靠 subtype 和 properties | RBAC/policy/control plane 关系建模 |
+
+如果本文最后只保留两个判断结论，那么就是：
+
+1. 在“资产模型”上，`Unity Catalog` 和 `Gravitino` 更偏各类型主表，`Polaris` 更偏统一主表。
+2. 在“格式隔离”上，三者都不是只押单层方案；最稳妥的思路仍然是 provider 边界、资产类型、具体格式三层分工。
 
 ## 3. 三条典型路线
 
@@ -97,9 +102,9 @@ Polaris:
 
 这种方案扩展性强、控制面建模自然，但结构化查询体验弱于强类型拆表方案。
 
-## 4. Unity Catalog OSS
+## 4. Unity Catalog OSS：资源分表模型
 
-### 4.1 存储模型概览
+### 4.1 后端存储模型
 
 Unity Catalog OSS 的后端存储是典型的“按资源类型拆表”模式。每类核心对象都有独立 DAO 表，层级关系也比较直接。
 
@@ -134,7 +139,7 @@ uc_delta_commits
 - `uc_registered_models.schema_id -> uc_schemas.id`
 - `uc_model_versions.registered_model_id -> uc_registered_models.id`
 
-### 4.2 资产模型怎么做
+### 4.2 资产模型设计
 
 如果只从“资产模型”角度看，Unity Catalog 是明显的“各类型主表”设计。
 
@@ -154,7 +159,7 @@ uc_delta_commits
 + 共享属性扩展表
 ```
 
-### 4.3 表对象如何落库
+### 4.3 表对象落库方式
 
 表对象主要落在 `uc_tables`，列对象主要落在 `uc_columns`。
 
@@ -176,7 +181,7 @@ uc_delta_commits
 - `nullable`
 - `partition_index`
 
-### 4.4 格式隔离怎么做
+### 4.4 格式隔离方式
 
 Unity Catalog 不是在 `catalog` 层先把 Delta、Iceberg、Parquet、CSV 等格式拆开，也不是按格式分别建不同主表。
 
@@ -201,7 +206,7 @@ catalog/schema/table 先统一建模
 
 所以 Unity Catalog 的格式隔离主要发生在资产对象层，而不是 `catalog` 边界层。
 
-### 4.5 多格式元数据的边界
+### 4.5 多格式元数据边界
 
 Unity Catalog 并不会把 Delta log、Iceberg manifest 这类格式原生元数据完整复制进 catalog DB。典型方式是：
 
@@ -215,7 +220,7 @@ Object Storage:
 
 因此 UC 数据库更多存的是“控制面元数据”和“入口指针”，而不是底层表格式的完整事务日志。
 
-### 4.6 权限与访问控制
+### 4.6 权限与访问控制设计
 
 Unity Catalog 使用独立控制面表来表达权限和存储访问：
 
@@ -225,7 +230,7 @@ Unity Catalog 使用独立控制面表来表达权限和存储访问：
 
 这说明它并没有把权限或 credential 直接揉进表对象主表，而是采用分离建模。
 
-### 4.7 设计评价
+### 4.7 方案评价
 
 优点：
 
@@ -246,9 +251,9 @@ Unity Catalog 使用独立控制面表来表达权限和存储访问：
 - 多资产目录场景
 - 希望 DB schema 清晰、易维护、易调试的团队
 
-## 5. Apache Gravitino
+## 5. Apache Gravitino：版本化联邦模型
 
-### 5.1 存储模型概览
+### 5.1 后端存储模型
 
 Gravitino 的顶层不是 `catalog`，而是 `metalake`。其对象层级更像：
 
@@ -281,7 +286,7 @@ metalake_meta
 - `statistic_meta`
 - `credential_meta`
 
-### 5.2 资产模型怎么做
+### 5.2 资产模型设计
 
 从资产模型角度看，Gravitino 本质上仍然是“各类型主表”，但不是 UC 那种单层强类型主表，而是“身份主表 + 版本表 + 明细表”。
 
@@ -308,7 +313,7 @@ table_meta
 + 明细表
 ```
 
-### 5.3 catalog 层的 provider 语义
+### 5.3 Catalog 层的 Provider 语义
 
 Gravitino 的 `catalog_meta` 比很多系统里的 catalog 更“重”，因为它不仅表示命名空间边界，还明确绑定 provider。
 
@@ -332,7 +337,7 @@ Gravitino 的 `catalog_meta` 比很多系统里的 catalog 更“重”，因为
 
 这意味着 Gravitino 的 catalog 本身就承担了“接入哪类 backend”的职责。
 
-### 5.4 表对象如何落库
+### 5.4 表对象落库方式
 
 Gravitino 的表对象不是一张表解决，而是拆成三层：
 
@@ -364,7 +369,7 @@ Gravitino 的表对象不是一张表解决，而是拆成三层：
 - 列变更操作类型
 - 所属 `table_version`
 
-### 5.5 格式隔离怎么做
+### 5.5 格式隔离方式
 
 Gravitino 是三者里最明显采用“两层隔离”思路的。
 
@@ -386,7 +391,7 @@ catalog 层先区分 provider / backend
 
 如果问题是“是否通过上层 catalog 层就明确不同格式边界”，三者中最接近这个做法的是 Gravitino，但它仍然没有把所有格式差异都上推到 catalog 层，而是保留了对象层表达能力。
 
-### 5.6 写入和更新路径
+### 5.6 写入与更新路径
 
 创建表时，典型流程是：
 
@@ -419,7 +424,7 @@ dropTable
   -> provider decides whether/how to drop physical metadata/data
 ```
 
-### 5.7 非表资产
+### 5.7 非表类资产
 
 Gravitino 对 `fileset`、`topic`、`model`、`function` 等非表资产也沿用了类似模式：
 
@@ -428,7 +433,7 @@ Gravitino 对 `fileset`、`topic`、`model`、`function` 等非表资产也沿�
 
 这说明其核心策略不是只对 table 特判，而是把“版本化元数据”作为统一设计原则。
 
-### 5.8 治理与安全
+### 5.8 治理与安全模型
 
 Gravitino 把治理对象也作为一等元数据对象处理：
 
@@ -443,7 +448,7 @@ Gravitino 把治理对象也作为一等元数据对象处理：
 
 它们通过对象关系表和通用 object reference 体系接入主元数据模型。
 
-### 5.9 设计评价
+### 5.9 方案评价
 
 优点：
 
@@ -465,9 +470,9 @@ Gravitino 把治理对象也作为一等元数据对象处理：
 - 需要版本化元数据和审计能力的平台
 - 希望把治理对象纳入统一元数据体系的场景
 
-## 6. Apache Polaris
+## 6. Apache Polaris：统一实体控制面模型
 
-### 6.1 存储模型概览
+### 6.1 后端存储模型
 
 Polaris 的物理表数量相对较少，核心是 `entities`。
 
@@ -485,7 +490,7 @@ Polaris 的物理表数量相对较少，核心是 `entities`。
 - `commit_metrics_report_roles`
 - `version`
 
-### 6.2 资产模型怎么做
+### 6.2 资产模型设计
 
 从资产模型角度看，Polaris 是三者里最接近“通用主表”的方案。
 
@@ -514,7 +519,7 @@ Polaris 的物理表数量相对较少，核心是 `entities`。
 + 关系表
 ```
 
-### 6.3 `entities` 怎么表达层级
+### 6.3 `entities` 的层级表达
 
 `entities` 的关键字段大致包括：
 
@@ -545,7 +550,7 @@ Polaris 的物理表数量相对较少，核心是 `entities`。
 
 这意味着 Polaris 的对象树主要通过 `parent_id` 表达，而不是靠单独的每类对象表。
 
-### 6.4 格式隔离怎么做
+### 6.4 格式隔离方式
 
 Polaris 不走“不同格式不同表”的路线，也不强调在 `catalog` 层按格式隔离。
 
@@ -569,7 +574,7 @@ Polaris 不走“不同格式不同表”的路线，也不强调在 `catalog` �
 + properties 承载格式细节
 ```
 
-### 6.5 权限模型
+### 6.5 权限模型设计
 
 Polaris 的权限关系主要存放在 `grant_records`：
 
@@ -594,7 +599,7 @@ securable 可以是：
 
 这种模式使 Polaris 很适合做统一 RBAC 和控制面权限管理。
 
-### 6.6 Policy 与认证
+### 6.6 Policy 与认证模型
 
 Polaris 中 policy 也是实体对象：
 
@@ -608,7 +613,7 @@ policy 与目标对象的绑定通过 `policy_mapping_record` 表达。
 
 这说明 Polaris 虽然采用统一实体表，但不会把所有内容都挤进一张表，而是把横切但安全敏感的内容拆到专门表。
 
-### 6.7 事件、幂等和 metrics
+### 6.7 事件、幂等与 Metrics
 
 Polaris 的持久化层不仅存元数据，还存控制面运行状态：
 
@@ -619,7 +624,7 @@ Polaris 的持久化层不仅存元数据，还存控制面运行状态：
 
 因此它更像完整 catalog service 的控制面状态库，而不仅仅是传统元数据仓。
 
-### 6.8 设计评价
+### 6.8 方案评价
 
 优点：
 
@@ -642,66 +647,107 @@ Polaris 的持久化层不仅存元数据，还存控制面运行状态：
 
 ## 7. 三种方案的横向对比
 
-### 7.1 资产模型
+这一节不再重复每个项目的细节，而是按几个最关键的判断维度横向看三者差异。这样更容易回答“如果我要设计自己的 catalog service，该借哪一类能力”。
 
-如果问题是“这些项目更偏通用主表，还是各类型主表”，答案如下：
+### 7.1 资产模型对比：先拆对象，还是先统一对象
 
-- `Unity Catalog`：各类型主表，辅以共享属性扩展表
-- `Gravitino`：各类型主表，辅以版本表和明细表
-- `Polaris`：统一主实体表，辅以类型字段和关系表
+这一维度要回答的是：系统到底把 `table`、`model`、`fileset`、`function` 这些对象先拆成独立主表，还是先统一进一个主实体模型。
 
-也就是说：
-
-- Unity Catalog 和 Gravitino 明显更偏“各类型主表”
-- Polaris 明显更偏“统一主表”
-
-### 7.2 格式隔离
-
-如果问题是“格式隔离是放在 catalog 层，还是放在资产 type / format 层”，答案如下：
-
-- `Unity Catalog`：主要靠资产表字段区分格式
-- `Gravitino`：先靠 `catalog/provider` 区分 backend，再靠资产版本表表达格式
-- `Polaris`：主要靠统一实体表中的 `subtype + properties`
-
-因此三者共同说明的一点是：
-
-- 只靠上层 `catalog` 层做格式隔离，不够灵活
-- 只靠一个统一 `type` 字段表达全部差异，也不够完整
-- 更稳妥的方式通常是分层表达
-
-### 7.3 版本化能力
-
-| 项目 | 版本化能力 | 方式 |
+| 项目 | 核心做法 | 说明 |
 | --- | --- | --- |
-| Unity Catalog OSS | 较弱 | 主要保存当前对象状态 |
-| Apache Gravitino | 很强 | `*_meta + *_version + detail` |
-| Apache Polaris | 中等 | 统一实体版本字段 + 控制面关系版本 |
+| Unity Catalog OSS | 各类型主表 | catalog、schema、table、column、volume、function、model 分别建表，扩展属性走共享表 |
+| Apache Gravitino | 各类型主表 + 版本表 | 每类资产先有 `*_meta` 主表，再用 `*_version` 和明细表表达可变内容 |
+| Apache Polaris | 统一主实体表 | catalog、namespace、table-like、principal、role、policy 等统一进 `entities` |
 
-### 7.4 权限与控制面
+这说明：
 
-| 项目 | 权限建模特点 |
+- `Unity Catalog` 和 `Gravitino` 更偏“强类型对象建模”
+- `Polaris` 更偏“统一实体建模”
+
+如果更看重 SQL 直观、调试简单、对象语义清晰，前两者更容易落地；如果更看重统一对象体系和控制面抽象，Polaris 更有代表性。
+
+### 7.2 格式隔离对比：差异放在 Catalog 层，还是对象层
+
+这一维度要回答的是：Delta、Iceberg、Paimon、Hudi、JDBC 这类差异，是在 `catalog/provider` 层先划分边界，还是在具体资产对象层表达。
+
+| 项目 | 核心做法 | 说明 |
+| --- | --- | --- |
+| Unity Catalog OSS | 主要在对象层表达 | 表对象统一落在 `uc_tables`，通过 `type`、`data_source_format` 等字段区分格式 |
+| Apache Gravitino | 分两层表达 | `catalog/provider` 先区分 backend 家族，`table_version.format/properties` 再表达对象级差异 |
+| Apache Polaris | 主要在统一实体模型中表达 | 通过 `sub_type_code`、`properties`、`internal_properties` 区分 table-like 对象差异 |
+
+这说明：
+
+- 只靠 `catalog` 层隔离格式，不够细
+- 只靠一个统一 `type` 字段，也不足以表达复杂语义
+- 更稳妥的方式通常是“provider 边界 + 对象级格式字段”两层结合
+
+### 7.3 版本化能力对比：保存当前状态，还是把演进过程建模出来
+
+这一维度要回答的是：系统是否把对象演进过程本身当成一等元数据来存。
+
+| 项目 | 版本化强度 | 核心方式 | 含义 |
+| --- | --- | --- | --- |
+| Unity Catalog OSS | 较弱 | 主要保存当前状态 | 更像面向当前视图的元数据目录 |
+| Apache Gravitino | 很强 | `*_meta + *_version + detail` | 把对象演进、schema 变化、历史内容都纳入模型 |
+| Apache Polaris | 中等 | 实体版本字段 + 授权关系版本 | 更强调控制面并发、一致性和授权缓存，而不是完整对象历史 |
+
+这说明：
+
+- `Unity Catalog` 更偏“当前状态目录”
+- `Gravitino` 更偏“版本化元数据系统”
+- `Polaris` 的版本字段更多服务于控制面状态管理
+
+### 7.4 权限与控制面对比：权限是附属能力，还是核心模型
+
+这一维度要回答的是：权限、policy、认证、事件、指标这些能力，是附加在元数据旁边，还是成为整个系统设计中心。
+
+| 项目 | 权限与控制面特点 | 整体判断 |
+| --- | --- | --- |
+| Unity Catalog OSS | 独立权限表、credential 表、external location 表 | 权限是重要能力，但仍然从属于资源目录模型 |
+| Apache Gravitino | tag、policy、role、owner、statistic、credential 等治理对象都纳入统一体系 | 权限和治理能力与元数据体系联动较强 |
+| Apache Polaris | RBAC、policy、auth、events、metrics 一体化最明显 | 控制面能力本身就是模型设计核心 |
+
+这说明：
+
+- `Unity Catalog` 更像“先把资源目录做好，再挂权限能力”
+- `Gravitino` 更像“把治理对象和元数据对象一起纳入统一体系”
+- `Polaris` 更像“从一开始就按 control plane 去设计模型”
+
+### 7.5 可借鉴能力总结
+
+如果从“自研系统应该借鉴什么”来收敛，三者最值得借鉴的点可以概括为：
+
+| 项目 | 最值得借鉴的地方 |
 | --- | --- |
-| Unity Catalog OSS | 独立权限表，偏传统 securable object 模式 |
-| Apache Gravitino | 治理对象丰富，权限和对象体系联动较强 |
-| Apache Polaris | RBAC、policy、auth、events、metrics 一体化最明显 |
+| Unity Catalog OSS | 清晰的对象分层、强类型主表、多资产目录表达 |
+| Apache Gravitino | provider 边界、版本化元数据、联邦适配能力 |
+| Apache Polaris | 统一 RBAC/policy 建模、控制面关系建模、统一实体树 |
 
-## 8. 对自研 Catalog Service 的建议
+换句话说：
 
-不建议直接照搬三者中的任意一个，而更适合组合借鉴。
+- 想把对象模型做清楚，优先看 `Unity Catalog`
+- 想把版本化和多 provider 做强，优先看 `Gravitino`
+- 想把授权、policy、control plane 做成核心能力，优先看 `Polaris`
 
-### 8.1 第一阶段建议目标
+## 8. 对自研 Catalog Service 的设计建议
 
-如果目标是自研一个 lakehouse / data / AI catalog，第一阶段通常应该优先做到：
+如果目标是自研一个 lakehouse / data / AI catalog，这三个开源项目更适合作为“能力来源”，而不是直接照搬的模板。更稳妥的做法是先明确设计原则，再落推荐模型。
 
-- 模型清晰
-- 查询直观
-- 能承载多资产
-- 预留版本化能力
-- 权限和 policy 独立建模
+### 8.1 设计原则
 
-### 8.2 推荐的组合式建模思路
+第一阶段建议优先满足以下原则：
 
-一个比较稳妥的中间方案可以是：
+- 模型清晰，能让研发和运维快速理解对象关系
+- 查询直观，常见问题可以直接用 SQL 排查
+- 能承载多资产，而不是只围绕表对象设计
+- 为 schema evolution 和元数据审计预留版本化能力
+- 权限、policy、credential 独立建模，而不是塞进对象 JSON
+- 格式隔离分层表达，而不是压到单一字段或单一层级
+
+### 8.2 推荐的数据模型骨架
+
+一个比较稳妥、也最容易迭代的中间方案可以是：
 
 ```text
 catalog
@@ -721,24 +767,35 @@ policy_binding
 audit_log
 ```
 
-其中可以这样分层：
+这个模型的核心思想不是“完全统一”，也不是“全部拆散”，而是三层分工：
+
+- `catalog` 层负责 provider / backend 边界
+- `asset` 层负责统一对象身份
+- 资产明细层负责强语义字段和格式差异
+
+### 8.3 推荐的职责分层
+
+建议按下面方式分层：
 
 `catalog`
 
-- 表达 provider / backend 边界
+- 表达 provider / backend family
 - 挂接连接配置、凭据、接入方式
+- 承担接入边界，而不是承载所有对象细节
 
 `schema`
 
 - 表达逻辑命名空间
+- 维持 catalog 下的层级组织
 
 `asset`
 
 - 承载通用身份字段：`id`、`name`、`schema_id`、`asset_type`、`owner`、`lifecycle`
+- 统一表达 table、view、model、fileset、topic 等对象的公共外壳
 
 `table_metadata`
 
-- 承载表专属强语义字段：`format`、`table_type`、`location`、`current_version`
+- 承载表对象专属的强语义字段：`format`、`table_type`、`location`、`current_version`
 
 `table_version`
 
@@ -750,26 +807,28 @@ audit_log
 
 `grant / policy / policy_binding`
 
-- 独立表达权限与策略，而不是塞进对象 JSON
+- 独立表达授权和策略关系
+- 不建议塞进 `asset.properties` 之类 JSON 字段里
 
-### 8.3 这个方案分别借鉴了谁
+### 8.4 这个方案分别借鉴了什么
 
-这个组合方案本质上是在取三者的优点：
+这个组合式方案，本质上是在取三者最稳定、最通用的优点：
 
-```text
-Unity Catalog:
-  清晰的对象分层和多资产主表
+| 来源 | 借鉴点 |
+| --- | --- |
+| Unity Catalog OSS | 清晰的对象分层、多资产主表、面向排障的强类型结构 |
+| Apache Gravitino | provider 边界、版本化元数据、对象演进能力 |
+| Apache Polaris | grant / policy 关系建模、控制面对象独立建模 |
 
-Gravitino:
-  版本化元数据和 provider 边界
+也就是说：
 
-Polaris:
-  独立的 grant / policy 关系建模
-```
+- 用 `Unity Catalog` 的方式把对象层次讲清楚
+- 用 `Gravitino` 的方式把可变内容和演进过程建出来
+- 用 `Polaris` 的方式把权限和策略从业务对象里拆出来
 
-### 8.4 关于格式隔离的具体建议
+### 8.5 关于格式隔离的具体建议
 
-如果要回答“格式隔离放哪一层最合理”，建议不要只押一种：
+如果要回答“格式隔离放哪一层最合理”，更建议采用分层表达，而不是只押一种：
 
 第一层：`catalog` 层做 provider / backend 边界隔离
 
@@ -786,7 +845,7 @@ Polaris:
 - `FILESET`
 - `TOPIC`
 
-第三层：资产明细层做具体格式表达
+第三层：资产明细层表达具体格式
 
 - `ICEBERG`
 - `DELTA`
@@ -794,7 +853,7 @@ Polaris:
 - `HUDI`
 - `PARQUET`
 
-推荐模式是：
+推荐模式可以概括为：
 
 ```text
 catalog.provider_type
@@ -807,32 +866,51 @@ table_metadata.format / asset.subtype
   -> 决定具体表格式
 ```
 
-这比“所有格式都压到 catalog 层”或“所有格式都压到一个 type 字段”都更稳妥。
+这个分层比“所有格式都压到 catalog 层”或“所有格式都压到一个 `type` 字段”都更稳妥，因为它同时保留了：
 
-## 9. 最终结论
+- provider 级边界
+- 对象级语义
+- 格式级细节
 
-这三个开源项目并不是同一种 data model 的不同实现，而是三条不同路线：
+## 9. 最终判断与建议
 
-- `Unity Catalog OSS`：多资产目录导向，后端结构清晰，适合做资源分表模型
+从后端 data model 设计角度看，这三个开源项目并不是同一种模型的不同实现，而是三条不同路线：
+
+- `Unity Catalog OSS`：多资产目录导向，适合做清晰的资源分表模型
 - `Apache Gravitino`：联邦元数据和版本化导向，适合多 provider、多源、多治理对象平台
 - `Apache Polaris`：Iceberg-first 控制面导向，适合统一实体、统一权限、统一 policy 的 catalog service
 
-如果只回答两个最核心的问题：
+如果只保留两个最关键的判断结论，可以收敛为：
 
-1. 资产模型更偏通用主表，还是各类型主表？
+### 9.1 资产模型如何选择
 
-- Unity Catalog：各类型主表
-- Gravitino：各类型主表
-- Polaris：统一主表
+- `Unity Catalog`：各类型主表
+- `Gravitino`：各类型主表
+- `Polaris`：统一主表
 
-2. 格式隔离是靠 catalog 层，还是靠资产字段区分？
+结论是：
 
-- Unity Catalog：主要靠资产对象字段
-- Gravitino：catalog/provider 先隔离，再由对象层补充
-- Polaris：主要靠 subtype 和 properties
+- 如果优先考虑对象语义清晰和工程可维护性，优先参考 `Unity Catalog` / `Gravitino`
+- 如果优先考虑统一实体模型和控制面抽象，优先参考 `Polaris`
 
-因此，对自研系统最有参考价值的并不是照搬某一个项目，而是组合三者：
+### 9.2 格式隔离如何分层
 
-- 用 Unity Catalog 的清晰分层承载多资产
-- 用 Gravitino 的版本化能力承载表结构演进
-- 用 Polaris 的关系建模承载 grant、policy 和控制面能力
+- `Unity Catalog`：主要靠资产对象字段表达格式
+- `Gravitino`：`catalog/provider` 先隔离，再由对象层补充
+- `Polaris`：主要靠 subtype 和 properties 表达
+
+结论是：
+
+- 只在 `catalog` 层隔离格式，不够细
+- 只在对象层放一个 `type` 字段，也不够强
+- 更合理的方式是 provider 边界、对象类型、具体格式三层分工
+
+### 9.3 对自研系统最有价值的借鉴
+
+如果目标不是复刻某个开源项目，而是设计一个长期可扩展的 catalog service，那么最值得组合借鉴的是：
+
+- 用 `Unity Catalog` 的清晰分层承载多资产
+- 用 `Gravitino` 的版本化能力承载对象演进
+- 用 `Polaris` 的关系建模承载 grant、policy 和控制面能力
+
+这也是本文最终的推荐方向。
