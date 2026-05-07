@@ -1,22 +1,32 @@
 # Open Source Catalog Backend Data Model Current State
 
-本文整理 Unity Catalog OSS、Apache Gravitino、Apache Polaris 三个开源 catalog 项目的后端存储 data model 现状和实现方式。
-
-重点不是 API 层的对象定义，而是这些对象最终在后端如何落库、如何组织关系、如何处理扩展字段、版本、权限和多格式/多 provider 差异。
+本文整理 `Unity Catalog OSS`、`Apache Gravitino`、`Apache Polaris` 三个开源 catalog 项目的后端 data model 设计，重点不是 API 层对象定义，而是这些对象在后端如何落库、如何组织关系、如何处理扩展字段、版本、权限，以及如何表达多格式和多 provider 差异。
 
 详细字段级表清单见：
 
 - `Industry/data-model/catalog-backend-storage-fields.md`
 
-## 1. 总体对比
+## 1. 阅读这篇文档时应该关注什么
 
-| 项目 | 后端存储模型风格 | 核心特点 | 适合借鉴的点 |
-| --- | --- | --- | --- |
-| Unity Catalog OSS | 按资源类型拆表 | Catalog/Schema/Table/Column/Volume/Function/Model 各有明确 DAO 表，属性用通用 KV 表扩展 | 简单清晰，适合多资产目录第一版 |
-| Apache Gravitino | 元数据主表 + version 表 + provider 联邦 | `metalake -> catalog -> schema -> object`，catalog 绑定 provider，表/文件集/topic/model 等采用身份表和版本表拆分 | 适合多源联邦、多 provider、元数据演进 |
-| Apache Polaris | 统一实体表 + 类型系统 + 关系表 | catalog、namespace、table-like、principal、role、policy 都存在 `entities`，通过 type/subtype 区分 | 适合 Iceberg REST catalog、统一权限、policy 建模 |
+对比这三类系统时，最值得关注的是五个问题：
 
-三者的根本差异：
+1. 核心对象是按类型分别建表，还是统一进一张实体表。
+2. 可变元数据是直接覆盖，还是单独做版本化存储。
+3. 多格式差异是放在 `catalog/provider` 层隔离，还是放在资产对象层表达。
+4. 权限、policy、credential 这类控制面对象，是嵌进业务对象，还是独立关系建模。
+5. 如果要自研 catalog service，哪些设计适合直接借鉴，哪些只适合特定场景。
+
+## 2. 一页结论
+
+先给出压缩版结论：
+
+| 项目 | 后端模型风格 | 资产建模方式 | 格式隔离方式 | 适合借鉴的点 |
+| --- | --- | --- | --- | --- |
+| Unity Catalog OSS | 资源类型拆表 + 共享扩展属性表 | 各类型主表 | 主要靠资产表字段区分 | 多资产目录、结构清晰、查询直观 |
+| Apache Gravitino | 类型主表 + 版本表 + provider 联邦 | 各类型主表，强调版本化 | `catalog/provider` 先隔离，再由对象层补充 | 多 provider 联邦、schema evolution、治理对象体系 |
+| Apache Polaris | 统一实体表 + 类型系统 + 关系表 | 通用主实体表 | 主要靠 subtype 和 properties 区分 | Iceberg REST catalog、统一 RBAC/policy/control plane |
+
+如果把三者的差异再压缩成一句话：
 
 ```text
 Unity Catalog:
@@ -24,21 +34,76 @@ Unity Catalog:
   -> uc_catalogs / uc_schemas / uc_tables / uc_columns / ...
 
 Gravitino:
-  identity table + version table
+  identity table + version table + provider boundary
   -> table_meta / table_version / table_column
-  -> provider adapter connects to Hive/Iceberg/JDBC/etc.
+  -> catalog.provider decides backend family
 
 Polaris:
   generic entity table
   -> entities(type_code, sub_type_code, properties, internal_properties)
-  -> grants/policy/auth separated as relation tables
+  -> grants / policy / auth via relation tables
 ```
 
-## 2. Unity Catalog OSS
+这三句话可以这样理解：
 
-### 2.1 存储模型现状
+- `Unity Catalog` 强调“按对象类型直接拆表”，先把 catalog、schema、table、column、volume、function、model 这些核心对象分别落到独立表中，因此它最像传统关系型元数据仓，优势是结构直观、查询清晰。
+- `Gravitino` 强调“对象身份”和“对象内容”分离，先用 `*_meta` 表保存对象是谁、属于哪一层、当前版本是什么，再用 `*_version` 和明细表保存对象当前长什么样，因此它天然更适合版本化元数据、多 provider 联邦和 schema evolution。
+- `Polaris` 强调“统一实体模型”，先把大多数对象都放进 `entities`，再通过 `type_code`、`sub_type_code` 和关系表表达对象差异、授权、policy 和认证，因此它最适合控制面能力强、统一 RBAC/policy 导向的 catalog service。
 
-Unity Catalog OSS 的后端存储是典型的“资源对象表”模型。每类核心对象都有独立 DAO 表：
+如果再进一步压缩成一句判断：
+
+- `Unity Catalog` 先按资源拆开
+- `Gravitino` 先按身份和版本拆开
+- `Polaris` 先把对象统一起来，再靠类型系统和关系建模区分
+
+## 3. 三条典型路线
+
+这三个项目本质上代表了三条不同的数据建模路线：
+
+### 3.1 路线一：按资源类型拆表
+
+代表项目：`Unity Catalog OSS`
+
+核心思路：
+
+- catalog、schema、table、column、volume、function、model 等对象分别建表
+- 强语义字段直接进入对应对象表
+- 扩展字段进入共享属性表
+
+这种方案最像传统关系型元数据仓的设计，优点是结构直观、调试容易，缺点是新增对象类型通常要新增物理表。
+
+### 3.2 路线二：身份表 + 版本表
+
+代表项目：`Apache Gravitino`
+
+核心思路：
+
+- 对象身份和对象内容分开存储
+- `*_meta` 保存 identity、层级、生命周期、当前版本指针
+- `*_version` 保存 comment、properties、format、location 等可变内容
+- 对列、参数等细粒度结构再拆明细表
+
+这种方案更适合 schema evolution、多 provider 联邦和元数据审计，但查询和一致性维护成本更高。
+
+### 3.3 路线三：统一实体表 + 类型系统
+
+代表项目：`Apache Polaris`
+
+核心思路：
+
+- catalog、namespace、table-like、principal、role、policy 等统一进入 `entities`
+- 用 `type_code` 和 `sub_type_code` 区分对象种类
+- 用关系表处理授权、policy 绑定、认证等横切能力
+
+这种方案扩展性强、控制面建模自然，但结构化查询体验弱于强类型拆表方案。
+
+## 4. Unity Catalog OSS
+
+### 4.1 存储模型概览
+
+Unity Catalog OSS 的后端存储是典型的“按资源类型拆表”模式。每类核心对象都有独立 DAO 表，层级关系也比较直接。
+
+典型结构如下：
 
 ```text
 uc_catalogs
@@ -52,14 +117,14 @@ uc_catalogs
           -> uc_model_versions
 
 uc_properties
+uc_permissions
 uc_storage_credentials
 uc_external_locations
-uc_permissions
 uc_staging_tables
 uc_delta_commits
 ```
 
-对象层级是明确外键关系：
+典型外键关系包括：
 
 - `uc_schemas.catalog_id -> uc_catalogs.id`
 - `uc_tables.schema_id -> uc_schemas.id`
@@ -69,105 +134,123 @@ uc_delta_commits
 - `uc_registered_models.schema_id -> uc_schemas.id`
 - `uc_model_versions.registered_model_id -> uc_registered_models.id`
 
-### 2.2 表对象如何落库
+### 4.2 资产模型怎么做
 
-表主记录在 `uc_tables`：
+如果只从“资产模型”角度看，Unity Catalog 是明显的“各类型主表”设计。
 
-| 字段类别 | 代表字段 | 说明 |
-| --- | --- | --- |
-| 身份 | `id`, `name`, `schema_id` | 表 ID、表名、所属 schema |
-| 类型 | `type`, `data_source_format` | MANAGED/EXTERNAL，DELTA/PARQUET/CSV 等 |
-| 存储位置 | `url` | 表根路径或外部路径 |
-| 字段摘要 | `column_count` | 字段数量缓存 |
-| UniForm/Iceberg | `uniform_iceberg_metadata_location`, `uniform_iceberg_converted_delta_version`, `uniform_iceberg_converted_delta_timestamp` | Iceberg 兼容元数据入口 |
-| 审计 | `owner`, `created_at`, `created_by`, `updated_at`, `updated_by` | 管理信息 |
+典型例子包括：
 
-字段存在 `uc_columns`，每列一行，保留：
+- `uc_tables`
+- `uc_volumes`
+- `uc_functions`
+- `uc_registered_models`
+
+这说明它会针对不同资产类型分别设计主表，把该类型的核心字段直接放进对应表中。通用但弱语义的附加属性，再通过 `uc_properties` 扩展。
+
+因此它的归类应当是：
+
+```text
+各类型主表
++ 共享属性扩展表
+```
+
+### 4.3 表对象如何落库
+
+表对象主要落在 `uc_tables`，列对象主要落在 `uc_columns`。
+
+`uc_tables` 承担的字段大致分为几类：
+
+- 身份字段：`id`、`name`、`schema_id`
+- 类型字段：`type`、`data_source_format`
+- 存储定位：`url`
+- 结构摘要：`column_count`
+- Iceberg 兼容信息：`uniform_iceberg_metadata_location` 等
+- 审计字段：`owner`、`created_at`、`updated_at`
+
+`uc_columns` 则保存列级结构，例如：
 
 - `ordinal_position`
 - `type_text`
 - `type_json`
 - `type_name`
-- precision/scale/interval
 - `nullable`
 - `partition_index`
 
-扩展属性不直接塞进 `uc_tables`，而是进入 `uc_properties`：
+### 4.4 格式隔离怎么做
+
+Unity Catalog 不是在 `catalog` 层先把 Delta、Iceberg、Parquet、CSV 等格式拆开，也不是按格式分别建不同主表。
+
+它的核心模式是：
+
+- 表对象统一落在 `uc_tables`
+- 通过表记录中的字段表达具体格式差异
+
+典型字段包括：
+
+- `type`
+- `data_source_format`
+- `url`
+- `uniform_iceberg_metadata_location`
+
+可以理解为：
 
 ```text
-entity_id
-entity_type
-property_key
-property_value
+catalog/schema/table 先统一建模
++ 具体格式由 table 记录中的字段表达
 ```
 
-这让任意对象都可以挂 KV 属性。
+所以 Unity Catalog 的格式隔离主要发生在资产对象层，而不是 `catalog` 边界层。
 
-### 2.3 多格式如何处理
+### 4.5 多格式元数据的边界
 
-Unity Catalog 并不把 Delta/Iceberg/Hudi 的完整事务元数据复制进 catalog DB。
-
-典型模式：
+Unity Catalog 并不会把 Delta log、Iceberg manifest 这类格式原生元数据完整复制进 catalog DB。典型方式是：
 
 ```text
 UC DB:
-  table id/name/schema/type/format/location/columns/properties
+  保存 table identity、format、location、columns、properties
 
 Object Storage:
-  Delta _delta_log
-  Iceberg metadata.json / manifests
-  Parquet/CSV/JSON data files
+  保存 Delta log / Iceberg metadata / data files
 ```
 
-对于 Delta 表：
+因此 UC 数据库更多存的是“控制面元数据”和“入口指针”，而不是底层表格式的完整事务日志。
 
-- UC 保存 `data_source_format=DELTA` 和 `url`。
-- Delta log 仍在对象存储。
-- managed Delta 建表会经过 `uc_staging_tables` 辅助提交。
-- `uc_delta_commits` 保存 UC Delta REST/managed Delta 所需的 commit 辅助状态。
+### 4.6 权限与访问控制
 
-对于 Iceberg 兼容：
+Unity Catalog 使用独立控制面表来表达权限和存储访问：
 
-- UC 表记录中保留 `uniform_iceberg_metadata_location`。
-- Iceberg 客户端通过 Iceberg REST API 拿到 metadata location。
-- 真正 snapshot/manifest 语义仍由 Iceberg metadata 文件解释。
+- `uc_permissions`
+- `uc_storage_credentials`
+- `uc_external_locations`
 
-### 2.4 权限与凭据
+这说明它并没有把权限或 credential 直接揉进表对象主表，而是采用分离建模。
 
-Unity Catalog 使用独立控制面表管理权限和存储访问：
-
-- `uc_permissions`：principal 对 securable object 的 privilege。
-- `uc_storage_credentials`：存储凭据。
-- `uc_external_locations`：外部路径和 credential 绑定。
-
-也就是说，数据对象和访问控制不是存在同一张表里，而是分开建模。
-
-### 2.5 设计评价
+### 4.7 设计评价
 
 优点：
 
-- 表结构直观，容易理解和查询。
-- 多资产支持自然：Table、Volume、Function、Model 都是一等对象。
-- `uc_properties` 提供扩展能力。
-- 和 REST/OpenAPI 模型映射简单。
+- 表结构清晰，容易理解和排障
+- 多资产支持天然，table、volume、function、model 都是一等对象
+- `uc_properties` 提供了适度扩展能力
+- 与 REST / OpenAPI 模型映射简单
 
 不足：
 
-- 版本化元数据能力较弱。
-- provider 联邦能力不如 Gravitino。
-- 多对象统一权限和 policy 的抽象不如 Polaris 紧凑。
+- 元数据版本化能力较弱
+- 多 provider 联邦能力不如 Gravitino
+- 统一 RBAC / policy 抽象不如 Polaris 强
 
-适合场景：
+更适合：
 
-- 自研 catalog 的第一阶段。
-- 目标是多资产目录，而不是复杂联邦 metastore。
-- 希望 DB schema 清楚、运维和调试简单。
+- 自研 catalog 的第一阶段
+- 多资产目录场景
+- 希望 DB schema 清晰、易维护、易调试的团队
 
-## 3. Apache Gravitino
+## 5. Apache Gravitino
 
-### 3.1 存储模型现状
+### 5.1 存储模型概览
 
-Gravitino 的顶层不是 catalog，而是 `metalake`。
+Gravitino 的顶层不是 `catalog`，而是 `metalake`。其对象层级更像：
 
 ```text
 metalake_meta
@@ -182,39 +265,63 @@ metalake_meta
           -> function_meta / function_version
 ```
 
-同时有治理和安全对象：
+同时，它还有一组治理和安全相关对象：
+
+- `tag_meta`
+- `tag_metadata_object_rel`
+- `policy_meta`
+- `policy_metadata_object_rel`
+- `role_meta`
+- `user_meta`
+- `group_meta`
+- `user_role_rel`
+- `group_role_rel`
+- `securable_object`
+- `owner_meta`
+- `statistic_meta`
+- `credential_meta`
+
+### 5.2 资产模型怎么做
+
+从资产模型角度看，Gravitino 本质上仍然是“各类型主表”，但不是 UC 那种单层强类型主表，而是“身份主表 + 版本表 + 明细表”。
+
+以表对象为例：
 
 ```text
-tag_meta
-tag_metadata_object_rel
-policy_meta
-policy_metadata_object_rel
-role_meta
-user_meta
-group_meta
-user_role_rel
-group_role_rel
-securable_object
-owner_meta
-statistic_meta
-credential_meta
+table_meta
+  + table_version
+  + table_column
 ```
 
-### 3.2 Catalog 与 provider
+以其他资产为例：
 
-Gravitino 的 `catalog_meta` 比 UC 的 catalog 更“重”，因为它直接决定后续对象由哪个 provider 管理：
+- `fileset_meta + fileset_version`
+- `topic_meta + topic_version`
+- `model_meta + model_version`
+- `function_meta + function_version`
+
+因此它更准确的归类应当是：
 
 ```text
-catalog_meta:
-  catalog_id
-  catalog_name
-  metalake_id
-  type
-  provider
-  properties
+各类型主表
++ 版本表
++ 明细表
 ```
 
-典型 provider：
+### 5.3 catalog 层的 provider 语义
+
+Gravitino 的 `catalog_meta` 比很多系统里的 catalog 更“重”，因为它不仅表示命名空间边界，还明确绑定 provider。
+
+典型字段包括：
+
+- `catalog_id`
+- `catalog_name`
+- `metalake_id`
+- `type`
+- `provider`
+- `properties`
+
+常见 provider 示例：
 
 - `hive`
 - `lakehouse-iceberg`
@@ -222,174 +329,171 @@ catalog_meta:
 - `lakehouse-hudi`
 - `jdbc-mysql`
 - `jdbc-postgresql`
-- `jdbc-doris`
-- `jdbc-starrocks`
-- `lakehouse-generic`
 
-这意味着 Gravitino 的后端 DB 保存的是统一控制面元数据，而底层真实表元数据可能仍在 Hive Metastore、Iceberg catalog、JDBC database 或对象存储里。
+这意味着 Gravitino 的 catalog 本身就承担了“接入哪类 backend”的职责。
 
-### 3.3 表对象如何落库
+### 5.4 表对象如何落库
 
-Gravitino 的表不是单表记录，而是拆成三层：
+Gravitino 的表对象不是一张表解决，而是拆成三层：
+
+`table_meta` 负责：
+
+- identity
+- 所属 metalake / catalog / schema
+- `current_version`
+- `last_version`
+- 生命周期和审计信息
+
+`table_version` 负责：
+
+- `format`
+- `properties`
+- `partitioning`
+- `distribution`
+- `sort_orders`
+- `indexes`
+- `comment`
+- `version`
+
+`table_column` 负责：
+
+- 列 identity
+- 列名、位置、类型
+- 是否 nullable
+- default value
+- 列变更操作类型
+- 所属 `table_version`
+
+### 5.5 格式隔离怎么做
+
+Gravitino 是三者里最明显采用“两层隔离”思路的。
+
+第一层在 `catalog_meta`：
+
+- `provider` 决定对象由哪类 backend 管理
+
+第二层在具体对象，尤其是 `table_version`：
+
+- `format`
+- `properties`
+
+因此它的模式更接近：
 
 ```text
-table_meta
-  表身份、命名空间、当前版本指针
-
-table_version
-  某一版本的表属性、格式、分区、排序、分布、索引、comment
-
-table_column
-  某一表版本下的列定义和列变更
+catalog 层先区分 provider / backend
++ table/version 层继续表达具体格式和元数据差异
 ```
 
-`table_meta` 代表“这张表是谁”：
+如果问题是“是否通过上层 catalog 层就明确不同格式边界”，三者中最接近这个做法的是 Gravitino，但它仍然没有把所有格式差异都上推到 catalog 层，而是保留了对象层表达能力。
 
-| 字段类别 | 代表字段 | 说明 |
-| --- | --- | --- |
-| 身份 | `table_id`, `table_name` | 表 ID 和名称 |
-| 归属 | `metalake_id`, `catalog_id`, `schema_id` | 命名空间路径 |
-| 版本指针 | `current_version`, `last_version` | 当前版本和最后版本 |
-| 生命周期 | `deleted_at` | 软删除时间 |
-| 审计 | `audit_info` | JSON 审计信息 |
+### 5.6 写入和更新路径
 
-`table_version` 代表“这个版本的表长什么样”：
-
-| 字段类别 | 代表字段 |
-| --- | --- |
-| 版本 | `table_id`, `version`, `last_version` |
-| 格式 | `format` |
-| 扩展属性 | `properties` |
-| 结构能力 | `partitioning`, `distribution`, `sort_orders`, `indexes` |
-| 描述 | `comment` |
-| 生命周期 | `deleted_at` |
-
-`table_column` 代表“列级版本变化”：
-
-| 字段类别 | 代表字段 |
-| --- | --- |
-| 身份 | `id`, `column_id`, `column_name` |
-| 归属 | `table_id`, `schema_id`, `catalog_id`, `metalake_id` |
-| 版本 | `table_version` |
-| 类型 | `column_type` |
-| 位置 | `column_position` |
-| 属性 | `nullable`, `auto_increment`, `default_value`, `column_comment` |
-| 操作 | `column_op_type` |
-| 生命周期 | `deleted_at` |
-
-### 3.4 写入和更新路径
-
-创建表时：
+创建表时，典型流程是：
 
 ```text
 createTable
-  -> resolve metalake/catalog/schema
+  -> resolve metalake / catalog / schema
   -> insert table_meta
   -> insert table_version(version=1)
   -> insert table_column(version=1)
   -> call provider-specific backend if needed
 ```
 
-更新表时：
+更新表时，典型流程是：
 
 ```text
 alterTable
   -> load old table_meta/current_version
-  -> compare table properties/columns
+  -> compare table metadata and columns
   -> update table_meta current_version/last_version
   -> insert new table_version if table-level metadata changed
   -> insert/update/delete table_column rows if columns changed
 ```
 
-删除表时：
+删除表时，典型流程是：
 
 ```text
 dropTable
   -> soft delete table_meta
   -> soft delete related version/column records
-  -> provider decides whether/how to drop underlying physical metadata/data
+  -> provider decides whether/how to drop physical metadata/data
 ```
 
-### 3.5 非表资产
+### 5.7 非表资产
 
-Gravitino 对 fileset/topic/model/function 等对象也采用类似思路：
+Gravitino 对 `fileset`、`topic`、`model`、`function` 等非表资产也沿用了类似模式：
 
-```text
-*_meta:
-  identity + namespace + current_version
+- `*_meta` 保存 identity 和当前版本指针
+- `*_version` 保存可变内容和扩展属性
 
-*_version:
-  mutable content + properties + comment/location/etc.
-```
+这说明其核心策略不是只对 table 特判，而是把“版本化元数据”作为统一设计原则。
 
-这说明 Gravitino 的通用策略是：
+### 5.8 治理与安全
 
-- identity 和 lifecycle 单独存。
-- mutable metadata 版本化存。
-- provider-specific 或结构化字段通过 JSON 保存。
+Gravitino 把治理对象也作为一等元数据对象处理：
 
-### 3.6 权限、标签、策略
+- tag
+- policy
+- role
+- user
+- group
+- owner
+- statistic
+- credential
 
-Gravitino 将治理对象作为一等元数据：
+它们通过对象关系表和通用 object reference 体系接入主元数据模型。
 
-- `tag_meta` 保存 tag 定义。
-- `tag_metadata_object_rel` 保存 tag 和对象的绑定。
-- `policy_meta` 保存 policy 定义。
-- `policy_metadata_object_rel` 保存 policy 和对象的绑定。
-- `role_meta`、`user_meta`、`group_meta`、`user_role_rel`、`group_role_rel` 支撑 RBAC。
-- `securable_object` 抽象可授权对象。
-- `owner_meta` 单独保存 owner 关系。
-
-### 3.7 设计评价
+### 5.9 设计评价
 
 优点：
 
-- 适合复杂 provider 联邦。
-- 表元数据演进能力强。
-- 版本化模型适合 schema evolution、列变更、审计。
-- 可以统一管理 table/fileset/topic/model/function/tag/policy。
+- 适合复杂 provider 联邦
+- schema evolution 和历史版本表达能力强
+- 能统一管理 table、fileset、topic、model、function 以及治理对象
+- 适合做 metadata lake 或多源控制面
 
 不足：
 
-- DB schema 复杂。
-- 查询一张完整表需要 join `table_meta/table_version/table_column`。
-- 需要严格处理 current version、last version、soft delete 一致性。
-- 统一模型与 provider 原生模型之间需要大量 adapter。
+- DB schema 复杂度高
+- 查询完整对象时 join 成本高
+- `current_version`、`last_version`、soft delete 一致性维护要求高
+- 统一模型和 provider 原生模型之间需要 adapter
 
-适合场景：
+更适合：
 
-- 多 catalog、多 provider、多云/多源联邦。
-- 需要 metadata lake，而不是单一 Iceberg catalog。
-- 需要将治理对象、标签、策略、权限纳入同一元数据体系。
+- 多 catalog、多 provider、多后端联邦平台
+- 需要版本化元数据和审计能力的平台
+- 希望把治理对象纳入统一元数据体系的场景
 
-## 4. Apache Polaris
+## 6. Apache Polaris
 
-### 4.1 存储模型现状
+### 6.1 存储模型概览
 
-Polaris 的物理表数量较少，核心是 `entities`。
+Polaris 的物理表数量相对较少，核心是 `entities`。
 
-```text
-entities
-grant_records
-principal_authentication_data
-policy_mapping_record
-events
-idempotency_records
-scan_metrics_report
-scan_metrics_report_roles
-commit_metrics_report
-commit_metrics_report_roles
-version
-```
+典型表包括：
 
-几乎所有核心业务对象都存在 `entities`：
+- `entities`
+- `grant_records`
+- `principal_authentication_data`
+- `policy_mapping_record`
+- `events`
+- `idempotency_records`
+- `scan_metrics_report`
+- `scan_metrics_report_roles`
+- `commit_metrics_report`
+- `commit_metrics_report_roles`
+- `version`
+
+### 6.2 资产模型怎么做
+
+从资产模型角度看，Polaris 是三者里最接近“通用主表”的方案。
+
+大量对象统一落在 `entities`：
 
 - catalog
 - namespace
 - table-like
-- Iceberg table
-- Iceberg view
-- generic table
 - principal
 - principal role
 - catalog role
@@ -397,85 +501,77 @@ version
 - task
 - file
 
-### 4.2 `entities` 统一实体表
+对象类别通过以下字段区分：
 
-`entities` 是 Polaris 最关键的表：
+- `type_code`
+- `sub_type_code`
 
-| 字段类别 | 代表字段 | 说明 |
-| --- | --- | --- |
-| 租户隔离 | `realm_id` | realm/multi-tenancy 分区 |
-| 身份 | `catalog_id`, `id`, `name` | catalog scope 下的 entity id 和 name |
-| 层级 | `parent_id` | 父实体 |
-| 类型 | `type_code`, `sub_type_code` | entity 大类和子类 |
-| 版本 | `entity_version` | 实体版本 |
-| 生命周期 | `create_timestamp`, `drop_timestamp`, `purge_timestamp`, `to_purge_timestamp`, `last_update_timestamp` | 生命周期时间 |
-| 扩展属性 | `properties`, `internal_properties` | JSON 属性 |
-| 权限版本 | `grant_records_version` | 授权变更版本 |
-| 位置索引 | `location_without_scheme` | location 查询优化 |
+因此它更接近：
 
-主键：
+```text
+统一主实体表
++ 类型区分字段
++ 关系表
+```
+
+### 6.3 `entities` 怎么表达层级
+
+`entities` 的关键字段大致包括：
+
+- `realm_id`
+- `catalog_id`
+- `id`
+- `parent_id`
+- `name`
+- `entity_version`
+- `type_code`
+- `sub_type_code`
+- `properties`
+- `internal_properties`
+- `grant_records_version`
+- `location_without_scheme`
+
+主键通常是：
 
 ```text
 (realm_id, id)
 ```
 
-路径唯一约束：
+路径唯一性则依赖类似：
 
 ```text
 (realm_id, catalog_id, parent_id, type_code, name)
 ```
 
-这说明 Polaris 的对象路径不是靠字符串 full name 直接存，而是靠 parent-child entity tree。
+这意味着 Polaris 的对象树主要通过 `parent_id` 表达，而不是靠单独的每类对象表。
 
-### 4.3 类型系统
+### 6.4 格式隔离怎么做
 
-`type_code` 表示大类：
+Polaris 不走“不同格式不同表”的路线，也不强调在 `catalog` 层按格式隔离。
 
-```text
-ROOT
-PRINCIPAL
-PRINCIPAL_ROLE
-CATALOG
-CATALOG_ROLE
-NAMESPACE
-TABLE_LIKE
-TASK
-FILE
-POLICY
-```
+它的方式更接近：
 
-`sub_type_code` 表示细分类型，例如：
+- table / view 等对象统一进 `entities`
+- 用 `type_code` / `sub_type_code` 区分对象类型
+- 用 `properties` / `internal_properties` 承载更具体的格式信息
 
-```text
-TABLE_LIKE:
-  ICEBERG_TABLE
-  ICEBERG_VIEW
-  GENERIC_TABLE
-```
+例如 table-like 对象可以细分为：
 
-因此表和视图并没有独立物理表，而是：
+- `ICEBERG_TABLE`
+- `ICEBERG_VIEW`
+- `GENERIC_TABLE`
+
+因此可以概括为：
 
 ```text
-entities.type_code = TABLE_LIKE
-entities.sub_type_code = ICEBERG_TABLE / ICEBERG_VIEW / GENERIC_TABLE
+统一实体表
++ subtype 区分对象细类
++ properties 承载格式细节
 ```
 
-Iceberg metadata location、base location、storage config 等存入 `properties` 或 `internal_properties`。
+### 6.5 权限模型
 
-### 4.4 权限模型
-
-Polaris 的权限关系存在 `grant_records`：
-
-```text
-realm_id
-securable_catalog_id
-securable_id
-grantee_catalog_id
-grantee_id
-privilege_code
-```
-
-这张表表达：
+Polaris 的权限关系主要存放在 `grant_records`：
 
 ```text
 grantee entity
@@ -496,165 +592,116 @@ securable 可以是：
 - table-like
 - policy
 
-Polaris 的 RBAC 是双层结构：
+这种模式使 Polaris 很适合做统一 RBAC 和控制面权限管理。
 
-```text
-Principal
-  -> PrincipalRole
-      -> CatalogRole
-          -> Privilege on Catalog/Namespace/Table/View/Policy
-```
+### 6.6 Policy 与认证
 
-这种设计把“平台级身份聚合”和“catalog 内权限边界”分开。
+Polaris 中 policy 也是实体对象：
 
-### 4.5 Policy 与认证
+- `entities.type_code = POLICY`
 
-Policy 不嵌入 table 或 namespace 记录，而是：
+policy 与目标对象的绑定通过 `policy_mapping_record` 表达。
 
-```text
-policy entity:
-  entities.type_code = POLICY
+认证信息不放在 `entities`，而是放在：
 
-binding:
-  policy_mapping_record
-```
+- `principal_authentication_data`
 
-`policy_mapping_record` 字段：
+这说明 Polaris 虽然采用统一实体表，但不会把所有内容都挤进一张表，而是把横切但安全敏感的内容拆到专门表。
 
-```text
-realm_id
-target_catalog_id
-target_id
-policy_type_code
-policy_catalog_id
-policy_id
-parameters
-```
+### 6.7 事件、幂等和 metrics
 
-principal 认证信息不放在 `entities`，而是单独表：
+Polaris 的持久化层不仅存元数据，还存控制面运行状态：
 
-```text
-principal_authentication_data:
-  realm_id
-  principal_id
-  principal_client_id
-  main_secret_hash
-  secondary_secret_hash
-  secret_salt
-```
+- `events`
+- `idempotency_records`
+- `scan_metrics_report`
+- `commit_metrics_report`
 
-### 4.6 事件、幂等和 metrics
+因此它更像完整 catalog service 的控制面状态库，而不仅仅是传统元数据仓。
 
-Polaris 的 persistence 不只存 catalog 对象，还存控制面运行状态：
-
-- `events`：事件记录。
-- `idempotency_records`：REST 幂等控制。
-- `scan_metrics_report`：扫描 metrics。
-- `commit_metrics_report`：提交 metrics。
-- `*_roles`：metrics report 和 role 的关系。
-
-这说明 Polaris 的后端存储已经不只是“元数据目录”，而是 catalog service 的控制面状态库。
-
-### 4.7 设计评价
+### 6.8 设计评价
 
 优点：
 
-- 所有对象统一 entity tree，扩展类型成本低。
-- 权限关系和 policy 关系非常通用。
-- 非常适合 Iceberg REST catalog 的 namespace/table/view 模型。
-- `grant_records_version` 有利于权限缓存和并发控制。
+- 所有对象统一 entity tree，扩展新类型成本低
+- RBAC、policy、control plane 关系建模自然
+- 非常适合 Iceberg REST catalog 体系
+- `grant_records_version` 有利于权限缓存和并发控制
 
 不足：
 
-- 对关系型数据库查询不如资源专表直观。
-- 业务字段大量在 JSON 中，结构化查询弱。
-- 不适合天然表达 UC 那种宽多资产模型，除非继续扩展 entity subtype。
-- 对非 Iceberg 格式主要是 generic table，不是完整原生元数据管理。
+- 对关系型数据库的结构化查询不如强类型分表直观
+- 大量业务字段放在 JSON，分析型查询和结构校验较弱
+- 对非 Iceberg 资产和多样化对象语义的天然表达能力不如 UC / Gravitino
 
-适合场景：
+更适合：
 
-- Iceberg REST catalog。
-- 希望 catalog、namespace、table、role、policy 都走统一实体树。
-- 权限、credential vending、幂等、事件等控制面能力是重点。
+- Iceberg REST catalog
+- 统一授权、policy、credential vending 是核心诉求的系统
+- 控制面能力强于“广义多资产目录”诉求的场景
 
-## 5. 三种设计路线的取舍
+## 7. 三种方案的横向对比
 
-### 5.1 按对象拆表
+### 7.1 资产模型
 
-代表：Unity Catalog。
+如果问题是“这些项目更偏通用主表，还是各类型主表”，答案如下：
 
-```text
-catalogs
-schemas
-tables
-columns
-volumes
-functions
-models
-```
+- `Unity Catalog`：各类型主表，辅以共享属性扩展表
+- `Gravitino`：各类型主表，辅以版本表和明细表
+- `Polaris`：统一主实体表，辅以类型字段和关系表
 
-适合：
+也就是说：
 
-- 对象类型明确。
-- 希望查询简单。
-- 早期快速落地。
-- 面向业务/治理人员排障。
+- Unity Catalog 和 Gravitino 明显更偏“各类型主表”
+- Polaris 明显更偏“统一主表”
 
-不适合：
+### 7.2 格式隔离
 
-- 元数据版本特别复杂。
-- 多 provider 差异特别大。
-- 希望任意对象都用同一套 entity service 管理。
+如果问题是“格式隔离是放在 catalog 层，还是放在资产 type / format 层”，答案如下：
 
-### 5.2 身份表 + 版本表
+- `Unity Catalog`：主要靠资产表字段区分格式
+- `Gravitino`：先靠 `catalog/provider` 区分 backend，再靠资产版本表表达格式
+- `Polaris`：主要靠统一实体表中的 `subtype + properties`
 
-代表：Gravitino。
+因此三者共同说明的一点是：
 
-```text
-table_meta
-table_version
-table_column
-```
+- 只靠上层 `catalog` 层做格式隔离，不够灵活
+- 只靠一个统一 `type` 字段表达全部差异，也不够完整
+- 更稳妥的方式通常是分层表达
 
-适合：
+### 7.3 版本化能力
 
-- 元数据演进频繁。
-- 要支持 schema evolution。
-- 要保存历史版本或至少保存版本化变更结构。
-- 要联邦多 provider。
+| 项目 | 版本化能力 | 方式 |
+| --- | --- | --- |
+| Unity Catalog OSS | 较弱 | 主要保存当前对象状态 |
+| Apache Gravitino | 很强 | `*_meta + *_version + detail` |
+| Apache Polaris | 中等 | 统一实体版本字段 + 控制面关系版本 |
 
-不适合：
+### 7.4 权限与控制面
 
-- 第一阶段只想做简单 catalog。
-- 团队不想维护复杂 join 和版本一致性。
+| 项目 | 权限建模特点 |
+| --- | --- |
+| Unity Catalog OSS | 独立权限表，偏传统 securable object 模式 |
+| Apache Gravitino | 治理对象丰富，权限和对象体系联动较强 |
+| Apache Polaris | RBAC、policy、auth、events、metrics 一体化最明显 |
 
-### 5.3 统一实体表
+## 8. 对自研 Catalog Service 的建议
 
-代表：Polaris。
+不建议直接照搬三者中的任意一个，而更适合组合借鉴。
 
-```text
-entities(type_code, sub_type_code, properties)
-grant_records
-policy_mapping_record
-```
+### 8.1 第一阶段建议目标
 
-适合：
+如果目标是自研一个 lakehouse / data / AI catalog，第一阶段通常应该优先做到：
 
-- 对象层级统一。
-- 权限和 policy 抽象优先。
-- 多对象类型共享生命周期、授权、缓存逻辑。
-- Iceberg catalog 场景。
+- 模型清晰
+- 查询直观
+- 能承载多资产
+- 预留版本化能力
+- 权限和 policy 独立建模
 
-不适合：
+### 8.2 推荐的组合式建模思路
 
-- 需要大量结构化查询每类资产专属字段。
-- 非 Iceberg 多资产语义特别丰富。
-
-## 6. 对自研 Catalog Service 的建议
-
-如果目标是自研 lakehouse/data/AI catalog，建议不要直接照搬某一个项目，而是组合借鉴。
-
-### 6.1 推荐第一阶段模型
+一个比较稳妥的中间方案可以是：
 
 ```text
 catalog
@@ -674,80 +721,118 @@ policy_binding
 audit_log
 ```
 
-### 6.2 设计原则
+其中可以这样分层：
 
-1. Catalog/Schema/Table 基础对象可以先用 UC 风格，清晰可查。
-2. Table metadata 建议预留 Gravitino 风格的 version 表，不要把所有表结构都覆盖更新到一行。
-3. 权限关系建议参考 Polaris，使用独立 grant 表，不要把权限塞进对象 JSON。
-4. Policy 也建议对象化，使用 binding 表绑定到 catalog/schema/table/model 等对象。
-5. 扩展属性可以用两层：
-   - 强语义字段进主表或版本表。
-   - 弱语义字段进 `properties` 或 `property` 表。
-6. 不要把 Delta log、Iceberg manifest、Paimon snapshot 等格式原生元数据完整复制进 catalog DB。catalog DB 应保存入口指针、治理属性和控制面状态。
+`catalog`
 
-### 6.3 推荐表结构草案
+- 表达 provider / backend 边界
+- 挂接连接配置、凭据、接入方式
 
-```text
-catalog
-  id, name, type, provider, storage_root, properties, audit
+`schema`
 
-schema
-  id, catalog_id, name, storage_location, properties, audit
+- 表达逻辑命名空间
 
-asset
-  id, catalog_id, schema_id, name, asset_type, owner, lifecycle, audit
+`asset`
 
-table_metadata
-  asset_id, format, table_type, location, current_version, last_version
+- 承载通用身份字段：`id`、`name`、`schema_id`、`asset_type`、`owner`、`lifecycle`
 
-table_version
-  asset_id, version, schema_json, partitioning_json, sort_json, properties_json, metadata_location
+`table_metadata`
 
-table_column_version
-  asset_id, version, column_id, name, type_json, position, nullable, default_value, op_type
+- 承载表专属强语义字段：`format`、`table_type`、`location`、`current_version`
 
-property
-  entity_id, entity_type, key, value
+`table_version`
 
-principal / role / grant
-  principal and RBAC model
+- 承载 schema、partitioning、sort order、metadata location、properties 等可变内容
 
-policy / policy_binding
-  policy definition and target binding
+`property`
 
-credential / external_location
-  storage access control
-```
+- 承载弱语义扩展字段
 
-这个组合基本对应：
+`grant / policy / policy_binding`
+
+- 独立表达权限与策略，而不是塞进对象 JSON
+
+### 8.3 这个方案分别借鉴了谁
+
+这个组合方案本质上是在取三者的优点：
 
 ```text
-UC:
-  clear asset tables
+Unity Catalog:
+  清晰的对象分层和多资产主表
 
 Gravitino:
-  table metadata versioning
+  版本化元数据和 provider 边界
 
 Polaris:
-  grant and policy relationship modeling
+  独立的 grant / policy 关系建模
 ```
 
-## 7. 结论
+### 8.4 关于格式隔离的具体建议
 
-三个项目代表了三条不同路线：
+如果要回答“格式隔离放哪一层最合理”，建议不要只押一种：
 
-- Unity Catalog：多资产 catalog，后端表清晰，适合统一治理产品。
-- Gravitino：联邦 metadata lake，后端版本化和 provider adapter 强，适合多源元数据平台。
-- Polaris：Iceberg-first catalog，统一 entity + RBAC + policy 强，适合开放 Iceberg REST catalog 服务。
+第一层：`catalog` 层做 provider / backend 边界隔离
 
-如果要设计自己的后端 data model，建议用以下判断：
+- Hive catalog
+- Iceberg catalog
+- Paimon catalog
+- JDBC catalog
 
-| 你的目标 | 优先借鉴 |
-| --- | --- |
-| 快速做出可用 catalog | Unity Catalog |
-| 做多 provider 联邦 | Gravitino |
-| 做 Iceberg REST + 权限 + credential vending | Polaris |
-| 做 AI/非表资产 | Unity Catalog + Gravitino |
-| 做表结构演进和审计 | Gravitino |
-| 做统一授权和 policy | Polaris |
+第二层：`asset` 层做对象类型区分
 
+- `TABLE`
+- `VIEW`
+- `MODEL`
+- `FILESET`
+- `TOPIC`
+
+第三层：资产明细层做具体格式表达
+
+- `ICEBERG`
+- `DELTA`
+- `PAIMON`
+- `HUDI`
+- `PARQUET`
+
+推荐模式是：
+
+```text
+catalog.provider_type
+  -> 决定 backend family
+
+asset.asset_type
+  -> 决定对象种类
+
+table_metadata.format / asset.subtype
+  -> 决定具体表格式
+```
+
+这比“所有格式都压到 catalog 层”或“所有格式都压到一个 type 字段”都更稳妥。
+
+## 9. 最终结论
+
+这三个开源项目并不是同一种 data model 的不同实现，而是三条不同路线：
+
+- `Unity Catalog OSS`：多资产目录导向，后端结构清晰，适合做资源分表模型
+- `Apache Gravitino`：联邦元数据和版本化导向，适合多 provider、多源、多治理对象平台
+- `Apache Polaris`：Iceberg-first 控制面导向，适合统一实体、统一权限、统一 policy 的 catalog service
+
+如果只回答两个最核心的问题：
+
+1. 资产模型更偏通用主表，还是各类型主表？
+
+- Unity Catalog：各类型主表
+- Gravitino：各类型主表
+- Polaris：统一主表
+
+2. 格式隔离是靠 catalog 层，还是靠资产字段区分？
+
+- Unity Catalog：主要靠资产对象字段
+- Gravitino：catalog/provider 先隔离，再由对象层补充
+- Polaris：主要靠 subtype 和 properties
+
+因此，对自研系统最有参考价值的并不是照搬某一个项目，而是组合三者：
+
+- 用 Unity Catalog 的清晰分层承载多资产
+- 用 Gravitino 的版本化能力承载表结构演进
+- 用 Polaris 的关系建模承载 grant、policy 和控制面能力
