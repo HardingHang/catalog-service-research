@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1360" height="780" viewBox="0 0 1360 780" role="img" aria-label="transplant 命令记录变化">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .title{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:30px;font-weight:700;fill:#0f172a}
+      .h{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:22px;font-weight:700;fill:#0f172a}
+      .s{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:16px;fill:#475569}
+      .mono{font-family:Consolas,"Microsoft YaHei",monospace;font-size:17px;fill:#1e293b}
+      .ref{fill:#eff6ff;stroke:#60a5fa;stroke-width:2;rx:10}
+      .obj{fill:#ecfdf5;stroke:#34d399;stroke-width:2;rx:10}
+      .src{fill:#eef2ff;stroke:#818cf8;stroke-width:2;rx:10}
+      .ok{fill:#f0fdf4;stroke:#22c55e;stroke-width:2;rx:10}
+      .warn{fill:#fffbeb;stroke:#f59e0b;stroke-width:2;rx:10}
+      .line{stroke:#334155;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+      .dash{stroke:#64748b;stroke-width:2;stroke-dasharray:7 6;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1360" height="780" fill="#f8fafc"/>
+  <text x="48" y="58" class="title">命令 4：transplant [c1, c2] into branch1</text>
+
+  <rect x="70" y="125" width="345" height="180" class="ref"/>
+  <text x="100" y="168" class="h">refs2 before</text>
+  <text x="100" y="214" class="mono">branch1.pointer = c0</text>
+  <text x="100" y="248" class="mono">branch2.pointer = c2</text>
+
+  <rect x="70" y="480" width="345" height="180" class="ok"/>
+  <text x="100" y="523" class="h">refs2 after</text>
+  <text x="100" y="569" class="mono">branch1.pointer = t2</text>
+  <text x="100" y="603" class="mono">branch2.pointer = c2</text>
+
+  <rect x="510" y="150" width="112" height="58" class="src"/>
+  <text x="543" y="186" class="mono">c0</text>
+  <rect x="690" y="105" width="112" height="58" class="src"/>
+  <text x="723" y="141" class="mono">c1</text>
+  <rect x="870" y="105" width="112" height="58" class="src"/>
+  <text x="903" y="141" class="mono">c2</text>
+  <path d="M622 179 C650 151 670 138 690 134" class="dash"/>
+  <path d="M802 134 L870 134" class="dash"/>
+  <text x="692" y="82" class="s">source branch2 commits</text>
+
+  <rect x="690" y="345" width="112" height="58" class="obj"/>
+  <text x="723" y="381" class="mono">t1</text>
+  <rect x="870" y="345" width="112" height="58" class="obj"/>
+  <text x="903" y="381" class="mono">t2</text>
+  <path d="M622 179 C660 260 678 320 690 374" class="line"/>
+  <path d="M802 374 L870 374" class="line"/>
+
+  <path d="M746 163 C740 235 740 292 746 345" class="dash"/>
+  <path d="M926 163 C920 235 920 292 926 345" class="dash"/>
+
+  <rect x="1070" y="220" width="220" height="140" class="warn"/>
+  <text x="1100" y="264" class="h">individual replay</text>
+  <text x="1100" y="302" class="mono">c1 -> t1</text>
+  <text x="1100" y="334" class="mono">c2 -> t2</text>
+
+  <path d="M982 374 C1025 410 1055 466 1070 530" class="line"/>
+  <path d="M1070 530 C845 585 615 588 415 568" class="line"/>
+  <text x="500" y="700" class="s">写入 t1/t2 后，通过一次最终 CAS 更新 branch1；branch2 不变。</text>
+</svg>

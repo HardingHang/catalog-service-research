@@ -1,23 +1,23 @@
 # Nessie Catalog 级 Git-Like 原理与实现流程
 
-> 面向已有 CS / DB / Catalog 基础知识的开发者。本文先说明 Iceberg 原生单表版本控制，再说明 Nessie 如何把版本控制提升到 Catalog 层，覆盖 `refs`、`objs`、`CommitObj`、`ContentValueObj`、`IndexObj`、OCC、CAS、commit / branch / merge 数据流以及物理存储结构。  
-> Nessie 源码核验版本：`projectnessie/nessie@3de486e26aa0809bb07be3fa46eeeb24e4d2c318`。  
+> 面向已有 CS / DB / Catalog 基础知识的开发者。本文先说明 Iceberg 单表版本控制，再说明 Nessie 如何把版本控制提升到 Catalog 层，覆盖 `refs`、`objs`、`CommitObj`、`ContentValueObj`、`IndexObj`、OCC、CAS、commit / branch / merge / transplant 数据流以及物理存储结构。
+> Nessie 源码核验版本：初版核验 `projectnessie/nessie@3de486e26aa0809bb07be3fa46eeeb24e4d2c318`（2026-04-29）；本次复核使用 `origin/main@006a5387187999599b9b1c9009d8c38fc5f49844`（2026-05-11），并参考官方当前文档，重点核验 namespace、merge/transplant、`refs2`/`objs2` 与 index 结构。
 
 ---
 
 ## 0. Iceberg 原生单表 Branch / Tag
 
-Iceberg 的版本控制边界是单张表。每张表都有自己的 table metadata JSON；写入、删除、重写或 schema/spec 变更会生成新的 metadata 文件，并由 catalog 原子替换当前 metadata 文件位置。Branch/tag 是 table metadata 内的 snapshot reference，用于给单表 snapshot 建立命名引用。
+Iceberg 的版本控制边界是单张表。每张表都有自己的 table metadata JSON；写入、删除、重写或 schema/spec 变更会生成新的 metadata 文件，再由 catalog 原子替换当前 metadata 文件位置。Branch/tag 是 table metadata 内的 snapshot reference，用于给单表 snapshot 建立命名引用。
 
-![Iceberg 单表版本控制](gitlike_src/00_iceberg_single_table_versioning.svg)
+![Iceberg 单表版本控制](Nessie_Catalog_GitLike_Principles_And_Flows_src/00_iceberg_single_table_versioning.svg)
 
 ### 0.1 功能与逻辑结构
 
-Iceberg 的 branch/tag 核心能力在 Iceberg 1.1.0 引入。官方 release note 显示，Apache Iceberg 1.1.0 于 2022-11-28 发布，并加入了用于跟踪 tag / branch 的 snapshot references，以及 `ManageSnapshots` 中的 branch / tag 操作。Iceberg 1.2.0 于 2023-03-20 发布，在此基础上补充了更完整的 branch commit 支持、Spark SQL 读写 branch/tag、以及创建、替换、删除 branch/tag 的 DDL 扩展。因此，若讨论 table metadata 内的 branch/tag 数据结构，起点是 1.1.0；若讨论 Spark SQL 层较完整的使用体验，通常从 1.2.0 开始。
+Iceberg 的 branch/tag 核心能力在 Iceberg 1.1.0 引入。官方 release note 显示，Apache Iceberg 1.1.0 于 2022-11-28 发布，加入了用于跟踪 tag / branch 的 snapshot references，以及 `ManageSnapshots` 中的 branch / tag 操作。Iceberg 1.2.0 于 2023-03-20 发布，继续补充 branch commit、Spark SQL 读写 branch/tag、以及创建、替换、删除 branch/tag 的 DDL。因此，讨论 table metadata 内的 branch/tag 数据结构时，起点是 1.1.0；讨论 Spark SQL 层较完整的使用体验时，通常从 1.2.0 开始。
 
-源码入口：[`SnapshotRef.java`](https://github.com/apache/iceberg/blob/main/api/src/main/java/org/apache/iceberg/SnapshotRef.java) 定义 branch/tag reference 类型及保留策略字段；[`TableMetadata.java`](https://github.com/apache/iceberg/blob/main/core/src/main/java/org/apache/iceberg/TableMetadata.java) 持有 `refs` 映射并将其作为 table metadata 的一部分。
+源码入口有两个。`SnapshotRef.java` 定义 branch/tag reference 类型及保留策略字段；`TableMetadata.java` 持有 `refs` 映射并将其作为 table metadata 的一部分。
 
-从最新 Iceberg 源码和规范看，原生 branch/tag 的核心结构是 `TableMetadata.refs()` 中的 `Map<String, SnapshotRef>`。`SnapshotRef` 同时表示 branch 和 tag。
+从最新 Iceberg 源码和规范看，原生 branch/tag 的核心结构是 `TableMetadata.refs()` 中的 `Map<String, SnapshotRef>`。例如：`SnapshotRef.type` 区分 `BRANCH` 与 `TAG`，`SnapshotRef.snapshotId` 指向具体 snapshot。
 
 | 字段 | 含义 |
 |---|---|
@@ -112,18 +112,18 @@ catalog branch qa:
 
 ## 1. Nessie 的抽象模型
 
-Nessie 的核心存储模型可以抽象为两类逻辑表：
+Nessie 的核心存储模型可以先抽象为两类入口：
 
 ```text
 refs：命名引用表。每个 branch/tag/internal ref 保存一个可变 pointer。
 objs：对象表。保存 commit、content value、index、tag、ref metadata 等对象。
 ```
 
-![Nessie refs/objs 抽象模型](gitlike_src/01_nessie_refs_objs_abstract.svg)
+![Nessie refs/objs 抽象模型](Nessie_Catalog_GitLike_Principles_And_Flows_src/01_nessie_refs_objs_abstract.svg)
 
 ### 1.1 `refs`：Catalog 状态的命名入口
 
-`refs` 中的每条记录是一个命名 pointer：
+`refs` 中的每条记录都是一个命名 pointer：
 
 ```text
 refs/heads/main -> c102
@@ -131,7 +131,7 @@ refs/heads/qa   -> q201
 refs/tags/eom   -> t050
 ```
 
-对 branch 来说，pointer 通常指向 `CommitObj`。读请求从 branch 名开始，解析到 HEAD commit，再通过 commit 的 index 找到各个 ContentKey 的当前 value。写请求先构造新的对象图，最后通过 CAS 更新目标 branch 的 pointer。
+对 branch 来说，pointer 通常指向 `CommitObj`。读请求从 branch 名解析到 HEAD commit，再通过 commit 的 index 找到各个 `ContentKey` 的当前 value。写请求先构造新的对象图，最后通过 CAS 更新目标 branch 的 pointer。
 
 `refs` 的抽象职责：
 
@@ -144,7 +144,7 @@ refs/tags/eom   -> t050
 
 ### 1.2 `objs`：Catalog 状态的对象图
 
-`objs` 是统一对象表。不同对象通过 `obj_type` 区分，通过 `ObjId` 相互引用：
+`objs` 是统一对象表。不同对象通过 `obj_type` 区分，并通过 `ObjId` 相互引用：
 
 ```text
 CommitObj c102
@@ -156,12 +156,7 @@ ContentValueObj cv_orders_v43
   -> IcebergTable(metadataLocation=orders/v43.metadata.json, snapshotId=43, ...)
 ```
 
-`objs` 中对象之间的联系分为两层：
-
-| 联系类型 | 说明 |
-|---|---|
-| 逻辑联系 | HEAD commit 表示一个 catalog snapshot；index 表示 ContentKey 到当前 content value 的映射；content value 表示表、视图或 namespace 的元数据状态 |
-| 物理联系 | 对象均存放在 `objs2` 中；对象之间通过 `ObjId` 字段或序列化 index bytes 引用；通常没有数据库外键 |
+`objs` 中对象之间形成一张由 `ObjId` 连接的对象图。HEAD commit 表示一个 catalog snapshot，index 表示 `ContentKey -> content value` 映射，content value 表示表、视图或 namespace 的 on-reference 元数据状态。例如：落到 JDBC2 后端时，对象统一存放在 `objs2` 中；对象连接由 `refs2.pointer`、`CommitObj.tail`、`CommitObj.referenceIndex`、index bytes 中的 `CommitOp.value` 等字段保存。
 
 Nessie 的原子可见性来自以下规则：
 
@@ -173,7 +168,7 @@ CAS 成功后，新的 HEAD 及其可达对象成为该 branch 的可见 catalog
 
 ### 1.3 `CommitObj`、`ContentValueObj`、`IndexObj` 的关系
 
-三类对象的关系是理解 Nessie 的关键：
+这几类对象共同表达 Nessie 的版本链和 catalog state：
 
 | 对象 | 逻辑作用 | 主要物理引用 |
 |---|---|---|
@@ -196,7 +191,7 @@ refs/heads/main
 
 ---
 
-## 2. 抽象流程：commit、branch、merge
+## 2. 抽象流程：commit、branch、merge、transplant
 
 本章只说明业务时序和 `refs` / `objs` 的逻辑变化，字段级结构在后续章节展开。
 
@@ -204,7 +199,7 @@ refs/heads/main
 
 场景：`main` 当前指向 `c100`，`sales.orders` 当前为 `cv_orders_v42`。客户端希望提交 `cv_orders_v43`。
 
-![commit 抽象流程](gitlike_src/02a_commit_abstract_flow.svg)
+![commit 抽象流程](Nessie_Catalog_GitLike_Principles_And_Flows_src/02a_commit_abstract_flow.svg)
 
 ```text
 1[Read HEAD]
@@ -245,9 +240,9 @@ refs/heads/main
       回到 1[Read HEAD]，读取最新 HEAD，并重新执行 2[Build View] 和 3[OCC]。
 ```
 
-Nessie Catalog 层的 `content state` 包括 `expected value`、`content id`、`payload`，间接描述和指向 Iceberg metadata JSON 文件。以 Iceberg 表为例，`ContentValueObj.data` 中保存 `IcebergTable(metadataLocation=orders/v42.metadata.json, snapshotId=42, ...)`，其中 `metadataLocation` 指向 Iceberg metadata JSON。
+Nessie Catalog 层的 `content state` 是某个 `ContentKey` 在某个 commit 上的 on-reference 状态。以 Iceberg 表为例：`ContentValueObj.data` 保存 `IcebergTable(metadataLocation=orders/v42.metadata.json, snapshotId=42, ...)`，其中 `metadataLocation` 指向 Iceberg metadata JSON。
 
-这些概念之间的关系可以按读取路径理解。HEAD 是入口，state / view 是从 HEAD 解析出的完整 catalog 快照；OCC 不直接比较 Iceberg metadata JSON 文件，而是比较该快照中某个 `ContentKey` 当前对应的 `CommitOp` 与客户端提交携带的 expected 信息。
+这些概念之间的关系可以按读取路径理解。HEAD 是入口，state / view 是从 HEAD 解析出的完整 catalog 快照。OCC 不直接比较 Iceberg metadata JSON 文件，而是比较该快照中某个 `ContentKey` 当前对应的 `CommitOp` 与客户端提交携带的 expected 信息。
 
 ```text
 HEAD / commit id
@@ -260,16 +255,20 @@ HEAD / commit id
 
 | 概念 | 是什么 / 包含哪些信息 | 在 OCC / CAS 中与谁比较 |
 |---|---|---|
-| HEAD | 某个 branch 当前 `refs.pointer` 指向的 `CommitObj.id`；例如 `main.pointer=c100` | CAS 用它作为 expected pointer：`WHERE pointer = Ccurrent` |
-| state / view | 从 HEAD 的 index 解析出的完整 catalog 快照；形态是 `ContentKey -> CommitOp` | OCC 查询 `state(Ccurrent)[ContentKey]`，得到当前 `value/contentId/payload` |
-| `ContentKey` | Catalog 对象名；例如 `sales.orders`、某个 view、某个 namespace | OCC 的冲突粒度；同一 `ContentKey` 的 catalog state 被改动即可能冲突 |
-| `expected value` | 客户端认为该 key 当前仍应指向的旧 `ContentValueObj.id`；例如 `cv_orders_v42` | 与 `state(Ccurrent)[key].value` 比较，不一致返回 `VALUE_DIFFERS` |
-| `content id` | 逻辑内容对象 ID；用于跨 rename / branch 识别同一个表、view 或 namespace | 与 `state(Ccurrent)[key].contentId` 比较，不一致返回 `CONTENT_ID_DIFFERS` |
-| `payload` | 内容类型编码；决定 content data 应按 Iceberg table、view、namespace 等哪种模型解释 | 与 `state(Ccurrent)[key].payload` 比较，不一致返回 `PAYLOAD_DIFFERS` |
-| `ContentValueObj.data` | 具体 content state；Iceberg 表时是 `IcebergTable(metadataLocation, snapshotId, schemaId, specId, sortOrderId, ...)` | 不直接逐字段比较；其序列化内容参与 `ContentValueObj.id`，从而体现在 value 比较中 |
-| `metadataLocation` | `IcebergTable` data 内的字段，指向 Iceberg metadata JSON 文件 | Nessie 不解析该 JSON；它通过 `ContentValueObj.id` 间接参与 OCC |
+| HEAD | 某个 branch 当前 `refs.pointer` 指向的 `CommitObj.id`。例如：`main.pointer=c100`。 | CAS 用它作为 expected pointer：`WHERE pointer = Ccurrent` |
+| state / view | 从 HEAD 的 index 解析出的完整 catalog 快照。例如：形态是 `ContentKey -> CommitOp`。 | OCC 查询 `state(Ccurrent)[ContentKey]`，得到当前 `value/contentId/payload` |
+| `ContentKey` | Catalog 对象名。例如：`sales.orders`、某个 view、某个 namespace。 | OCC 的冲突粒度；同一 `ContentKey` 的 catalog state 被改动即可能冲突 |
+| `expected value` | 客户端认为该 key 当前仍应指向的旧 `ContentValueObj.id`。例如：`cv_orders_v42`。 | 与 `state(Ccurrent)[key].value` 比较，不一致返回 `VALUE_DIFFERS` |
+| `content id` | 逻辑内容对象 ID，用于跨 rename / branch 识别同一个表、view 或 namespace。例如：rename 前后的表保留同一 content id。 | 与 `state(Ccurrent)[key].contentId` 比较，不一致返回 `CONTENT_ID_DIFFERS` |
+| `payload` | 内容类型编码，决定 content data 应按哪种模型解释。例如：Iceberg table、view、namespace 对应不同 payload。 | 与 `state(Ccurrent)[key].payload` 比较，不一致返回 `PAYLOAD_DIFFERS` |
+| `ContentValueObj.data` | 具体 content state。例如：Iceberg 表时是 `IcebergTable(metadataLocation, snapshotId, schemaId, specId, sortOrderId, ...)`。 | 不直接逐字段比较；其序列化内容参与 `ContentValueObj.id`，从而体现在 value 比较中 |
+| `metadataLocation` | `IcebergTable` data 内的字段。例如：它指向 Iceberg metadata JSON 文件。 | Nessie 不解析该 JSON；它通过 `ContentValueObj.id` 间接参与 OCC |
 
-OCC 的冲突粒度是 `ContentKey`，例如 `sales.orders`、某个 view 或 namespace。Nessie 判断的是“这个 catalog 对象的状态是否仍等于提交者声明的 expected state”，不是判断 Iceberg manifest、partition、data file 或 row 级别的重叠。更细的同表并发 append / overwrite 语义由 Iceberg 自己的 snapshot validation 负责。
+OCC 的冲突粒度是 `ContentKey`。例如：`sales.orders`、某个 view 或 namespace 各自作为独立 key 参与冲突判断。Nessie 判断的是“这个 catalog 对象的状态是否仍等于提交者声明的 expected state”，不是判断 Iceberg manifest、partition、data file 或 row 级别的重叠；更细的同表并发 append / overwrite 语义由 Iceberg 的 snapshot validation 负责。
+
+需要特别区分 namespace 与文件系统目录的类比。`Namespace` 在 Nessie 中也是一种 `Content`，payload id 为 `4`；它的 on-reference state 由 content id、路径元素 `elements` 和 `properties` 组成。例如：服务端序列化时写入的是 `id + Namespace(elements, properties)`，不是“该 namespace 下有哪些表、view、子 namespace”的目录清单。子对象是否存在，需要从完整 catalog index 中按 `ContentKey` 前缀查询。因此，两个提交分别修改 `sales.orders` 与 `sales.customers`，即使二者都位于 `sales` namespace 下，也不会仅因共享 namespace 而发生 OCC 冲突。
+
+namespace 自身被修改时仍按同一个 `ContentKey` 冲突。`properties` 是任意字符串键值 map，常见键包括 `location` 和业务自定义属性。Iceberg REST 读取 namespace 时，如果存储属性中没有 `location`，服务端可能按 warehouse 配置计算返回值；这不表示 namespace content 保存了子表清单。例如：两个提交同时更新 `sales` namespace 的 properties，一个设置 `location=s3://lake/sales/`，另一个增删自定义属性，都会生成同一 namespace key 上的新 `ContentValueObj`；若两边 expected value 不再匹配，就会返回 `VALUE_DIFFERS` 或相关 key 冲突。namespace 还参与 catalog 约束校验：创建表/视图时父 namespace 必须存在且类型必须是 `NAMESPACE`；删除 namespace 时该 namespace 下不能仍有 live content key，否则会产生 `NAMESPACE_ABSENT`、`NOT_A_NAMESPACE`、`NAMESPACE_NOT_EMPTY` 等冲突。这些约束冲突不同于“同一 namespace 下任意不同表都冲突”。
 
 | 时刻 | `refs` 状态 | `objs` 变化 | 可见状态 |
 |---|---|---|---|
@@ -289,7 +288,7 @@ OCC 与 CAS 的职责不同：
 
 场景：从 `main` 创建 `qa`。
 
-![branch 抽象流程](gitlike_src/02b_branch_abstract_flow.svg)
+![branch 抽象流程](Nessie_Catalog_GitLike_Principles_And_Flows_src/02b_branch_abstract_flow.svg)
 
 ```text
 T0:
@@ -305,14 +304,15 @@ T1:
 ```text
 main: c100 -> m101
 qa:   c100 -> q101
+```
 
-实现层还会维护内部引用索引，例如通过内部 reference 记录 reference 创建/删除相关日志。这些内部对象服务于 reference 管理，不改变 branch 创建的抽象成本：新 branch 复用已有 HEAD 对象图。
+实现层还会维护内部引用索引。例如：内部 reference 会记录 reference 创建/删除相关日志。这些内部对象服务于 reference 管理，不改变 branch 创建的抽象成本：新 branch 复用已有 HEAD 对象图。
 
 ### 2.3 merge 的时序
 
 场景：`qa` 从 `main@c100` 分出后产生两个提交：
 
-![merge 抽象流程](gitlike_src/02c_merge_abstract_flow.svg)
+![merge 抽象流程](Nessie_Catalog_GitLike_Principles_And_Flows_src/02c_merge_abstract_flow.svg)
 
 ```text
 main: c100
@@ -324,39 +324,89 @@ qa:   c100 -> q101 -> q102
 ```text
 1. 找到 source 和 target 的共同祖先 c100。
 2. 取出 source 上相对 c100 的变更：q101、q102。
-3. 在 target 当前 HEAD 上 replay 这些 CommitOp。
-4. 每一步 replay 都基于 target 当前 catalog state 做冲突检查。
-5. 写入 target 侧的新 commit 对象，例如 m101、m102。
-6. CAS 更新 target ref：main -> m102。
+3. 在 target 当前 HEAD 上计算 source 相对共同祖先的 diff / CommitOp。
+4. 基于 target 当前 catalog state 做冲突检查和 namespace 约束校验。
+5. 当前实现将这些变更压成一个 target 侧 squashed merge commit，例如 m101。
+6. 最后一次性更新 target ref：main -> m101。
 ```
 
-Nessie merge 的关键是 replay 到目标分支，而不是直接把目标 pointer 改成 source HEAD。原因是 merge 期间 target 可能已经有新提交：
+Nessie merge 的关键是把 source 相对共同祖先的变更应用到目标分支，而不是直接把目标 pointer 改成 source HEAD。原因是 merge 期间 target 可能已经有新提交：
 
 ```text
 main: c100 -> m200
 qa:   c100 -> q101 -> q102
 ```
 
-此时正确做法是以 `m200` 为 target 起点重新 replay `q101/q102` 的变更，并检查这些变更是否与 `m200` 中已发生的变更冲突。
+此时正确做法是以 `m200` 为 target 起点重新计算 merge base、source diff 和冲突，再生成新的 target-side merge commit。当前 `VersionStoreImpl.merge()` 使用 `MergeSquashImpl`，v2 客户端和 REST 层也限制 merge 只能是 squashed merge。例如：`keepIndividualCommits(true)` 会被拒绝，`CommitObj.secondaryParents` 记录 merge 来源 HEAD。如果希望保留 source 的逐个 commit 边界，应使用 transplant。
 
-### 2.4 merge 与 Git 双父提交的差异
+merge 的可见性仍是原子的。merge 会先构造候选对象并检查冲突；只有无冲突、非 dry-run 且最终 reference pointer 更新成功时，target branch 才前进。如果中途冲突、校验失败或最终 CAS/update 失败，`main` 不会出现“只应用了前半段”的可见历史。某些后端/路径可能已经预写了不可达对象，但这些对象不在 `refs2.pointer` 可达链上，不会出现在 target branch 的 commit log 中。
 
-Nessie 的主 commit 链保持单父链。merge replay 生成的 target commit 以 target 当前 HEAD 为直接父。`CommitObj.secondaryParents` 可以记录 merge 来源，但读路径、log 主链遍历和 index 构建主要沿 `tail[0]` 前进。
+### 2.4 transplant 的时序
+
+场景：`branch2` 从 `branch1@c0` 分出后产生两个提交，需要把这两个提交按原提交边界移植到 `branch1`：
+
+![transplant 抽象流程](Nessie_Catalog_GitLike_Principles_And_Flows_src/02d_transplant_abstract_flow.svg)
+
+```text
+branch1: c0
+branch2: c0 -> c1 -> c2
+
+transplant [c1, c2] from branch2 into branch1
+```
+
+transplant 的抽象流程：
+
+```text
+1. 解析 source ref 和 target branch，确认 target 是 branch。
+2. 校验 hashesToTransplant 非空、在 fromRefName 上可解析、并且按旧到新顺序连续。
+   例如 [c1, c2] 会检查 c2.directParent == c1。
+3. 从 target 当前 HEAD 开始逐个 clone source commit 的 operations：
+      c1 -> t1(parent = c0)
+      c2 -> t2(parent = t1)
+4. 每一步都基于 target 当前 catalog state 做 ContentKey / namespace 冲突校验。
+5. 最后通过一次 reference update 让 target branch 指向最后一个新 commit：
+      branch1 -> t2
+```
+
+成功后 target 历史是 `branch1: c0 -> t1 -> t2`，其中 `t1/t2` 是 target 侧新 commit，不是原来的 `c1/c2`。source branch 保持不变。通常不要把共同基点 `c0` 放进 `hashesToTransplant`；它是 base，不是要 replay 的增量提交。若从 `branch2` 传入 `[c1, c2]` 并 transplant 到仍在 `c0` 的 `branch1`，只要权限、引用解析和冲突校验都通过，这条路径会成功。
+
+transplant 也按最终 reference pointer 更新决定可见性。实现会逐个构造候选 commit，但对外可见的 target branch HEAD 只有在最后一个 transplanted commit 成为 `refs2.pointer` 后才前进；失败时 target branch 不会停在中间的 `t1`。
+
+### 2.5 merge、transplant 与 rebase 的关系
+
+Nessie API 中有 merge 和 transplant，没有暴露独立的 Git 式 `rebase` API。旧 v1 HTTP 文档曾把 merge 描述成“rebase + fast-forward merge”，主要是为了说明它会把 source 变更应用到 target 当前 HEAD 上；当前代码层面应区分：
+
+| 操作 | 当前产物 | source 范围 | target 可见时机 |
+|---|---|---|---|
+| merge | 一个 squashed merge commit | 从 `fromHash` 回溯到与 target 的共同祖先之间的变更 | 最终 target ref 更新成功后一次性可见 |
+| transplant | 保留 individual commits | 请求中显式给出的、连续且有序的 commit hash 列表 | 只有最后一个 transplanted commit 成为 target HEAD 后才整体可见 |
+
+这个限制不是单纯客户端行为，而是多层共同约束。v2 REST/combined client 在调用 `keepIndividualCommits(true)` 做 merge 时直接抛错。v1 REST 兼容层保留了 deprecated 参数，但通过 `validateKeepIndividual(merge, false, "Merge", "squashed")` 拒绝 individual merge，同时要求 transplant 只能是 unsquashed。存储层把 merge 路由到 `MergeSquashImpl`，把 transplant 路由到 `TransplantIndividualImpl`，没有提供 non-squash merge 或 squash transplant 的实现入口。
+
+该行为从 PR #7035 开始进入主线，PR 于 2023-06-23 合入，并随 `nessie-0.62.0` 在同日发布。那次改动让 merge base 识别尊重 merge parents，从而支持对同一 source branch 的增量 merge；同时移除了“individual merge”和“squashed transplant”两种模式，使 V2 API 只保留当前行为。显式在 v2 client 中抛出 `Commits are always squashed during merge operations.` 的代码来自 PR #7516，PR 于 2023-09-20 合入；它只是把已经固定的服务端/存储层行为提前到客户端校验。
+
+transplant 更接近 Git 的 cherry-pick，即把一段提交重放到另一条分支顶部。例如：调用路径是 `/history/transplant` 或 Java builder `transplantCommitsIntoBranch()`，请求中显式传入 `hashesToTransplant` 和 `fromRefName`。它不会自动选择“source branch 上所有还没有合入的提交”，也不会生成 squash commit。
+
+### 2.6 merge 与 Git 双父提交的差异
+
+Nessie 的主 commit 链保持单父链。merge 或 transplant 生成的 target commit 以 target 当前 HEAD 为直接父。`CommitObj.secondaryParents` 可以记录 merge 来源；读路径、log 主链遍历和 index 构建主要沿 `tail[0]` 前进。
 
 这与传统 Git merge commit 的差异如下：
 
 | 维度 | Git | Nessie |
 |---|---|---|
 | 主对象 | 文件树 / blob / commit graph | Catalog ContentKey -> content value |
-| merge 结果 | 通常生成双父 merge commit | 将 source operations replay 到 target branch |
+| merge 结果 | 通常生成双父 merge commit | 当前 merge 生成一个 squashed target-side commit；transplant 可保留逐个 commit |
 | 主父链 | commit graph 可天然多父 | 主链保持单父，附加父通过 `secondaryParents` 表达 |
 | 冲突粒度 | 文件/行/自定义 merge driver | ContentKey、payload、contentId、value |
 
 ---
 
-## 3. 具体结构：`refs2`、`objs2` 与对象字段
+## 3. 物理表到 Java 对象
 
-![Nessie 对象图详细结构](gitlike_src/03_object_graph_detailed.svg)
+![Nessie 对象图详细结构](Nessie_Catalog_GitLike_Principles_And_Flows_src/03_object_graph_detailed.svg)
+
+JDBC2 后端主要用 `refs2` 和 `objs2` 两张表承载 Nessie 的持久化对象图。`refs2` 保存命名引用的当前状态，`objs2` 保存 commit、content value、index、tag 等对象的序列化内容。Java/persist 层的 `Reference`、`CommitObj`、`ContentValueObj`、`IndexObj` 等对象，是对这些表行和二进制字段的类型化解释。
 
 ### 3.1 `refs2` 表与 `Reference`
 
@@ -386,7 +436,9 @@ refs2(
 | `extendedInfoObj` | 可选扩展信息对象 |
 | `previousPointers` | 最近旧 HEAD 列表，用于恢复、容错和 reference 历史处理 |
 
-`refs2.pointer` 是从命名 ref 到 `objs2.obj_id` 的物理入口。后端没有要求用数据库外键维护该关系；一致性由 Nessie 的写入顺序和 CAS 协议保证。
+`Reference` 是 generic named pointer，同一套命名指针结构可承载 branch、tag 和内部 reference。例如：`refs/heads/<name>` 通常指向 `COMMIT`，`refs/tags/<name>` 可指向 tag 或 commit，`int/` 前缀用于内部引用。`refs2` 是物理表，`Reference` 是 persist 层的一行抽象。例如：表中的 `repo` 是多 repository 分区字段，不属于单个 `Reference` 对象本身；`pointer` 保存对象图入口的 `ObjId`，`prev_ptr` 和 `ext_info` 分别序列化为 `previousPointers` 与 `extendedInfoObj`。
+
+`prev_ptr` 保存最近旧 pointer 列表，并带有时间戳；它不是 `CommitObj.tail` 父链的重复。branch pointer 可能因为 assign、删除/重建或内部恢复而跳到一个不在当前 commit 父链上的对象，旧 HEAD 列表服务一致性检查、短时间窗口内的 reference history 和恢复诊断。例如：当前默认配置保留最近 `20` 个旧 pointer，并限制在最近 `300` 秒窗口内，配置项分别是 `ref-previous-head-count` 与 `ref-previous-head-time-span-seconds`。
 
 ### 3.2 `objs2` 表与对象类型
 
@@ -413,6 +465,10 @@ objs2(
 | `obj_value` | protobuf / 二进制序列化后的对象内容 |
 | `obj_ref` | 对象最后写入或引用时间，主要服务 cleanup |
 
+`objs2` 是通用对象表，不为 `CommitObj`、`ContentValueObj`、`IndexObj` 等分别建物理表。`obj_type` 说明这一行是什么标准对象，`obj_value` 保存该对象按 protobuf schema 序列化后的二进制内容。例如：`obj_type='c'` 时，`obj_value` 中包含 `CommitProto(created, seq, tail, secondaryParents, headers, message, referenceIndex, incrementalIndex, ...)`。protobuf 即 Protocol Buffers，是一种用 `.proto` schema 定义字段、由生成代码读写的二进制序列化格式；后端只稳定保存 bytes，字段解释由 Nessie 的序列化代码完成。
+
+对象之间的连接由 typed object 内部的 `ObjId` 字段承载。例如：`refs2.pointer` 进入当前 HEAD commit，`CommitObj.tail` 和 `secondaryParents` 指向其他 commit，`CommitObj.referenceIndex` 或 `referenceIndexStripes.segment` 指向 index 对象，index 中的 `CommitOp.value` 指向 `ContentValueObj.id`。Nessie 先写入这些不可变对象，再通过一次 reference pointer 更新决定它们是否从某个 branch 可达。
+
 标准对象类型：
 
 | 类型 | 短码 | 对应对象 |
@@ -436,11 +492,11 @@ objs2(
 | `RefObj` | `REF + name + initialPointer + createdAtMicros` |
 | `CommitObj` | `COMMIT + parent + message + headers + add/remove ops` |
 
-因此，部分派生字段可以在不改变版本语义的前提下被补齐或更新，例如完整 index 物化相关字段。语义上决定 commit 内容的是 parent、message、headers 和 key 级 operations。
+因此，部分派生字段可以在不改变版本语义的前提下被补齐或更新。例如：完整 index 物化相关字段可以变化；语义上决定 commit 内容的是 parent、message、headers 和 key 级 operations。
 
 ### 3.3 `CommitObj`
 
-`CommitObj` 是 catalog 版本链节点，核心字段如下：
+`CommitObj` 是 Java/persist 层的 catalog 版本链节点，不是一张独立物理表。落到 JDBC2 后端时，它是 `objs2` 中 `obj_type='c'` 的一行；字段内容位于 `obj_value` 的 `CommitProto` 二进制里。核心字段如下：
 
 | 字段 | 含义 |
 |---|---|
@@ -501,7 +557,15 @@ objs2(
 | `sortOrderId` | 当前 sort order id |
 | `id` | content id |
 
-因此，对 Nessie 来说，`ContentValueObj` 并不存储数据文件列表；它存储的是某个 catalog content 的元数据指针和表格式状态。
+namespace 作为 content 时也存放在 `ContentValueObj.data` 中，但字段很少：
+
+| 字段 | Namespace 语义 |
+|---|---|
+| `id` | content id，跨 rename / branch 跟踪该 namespace content |
+| `elements` | namespace 路径元素，例如 `["sales"]` 或 `["sales","prod"]` |
+| `properties` | namespace 属性 map，例如 `location` 和用户自定义键值 |
+
+因此，`ContentValueObj` 不存储数据文件列表，也不存储“namespace 下有哪些表”的目录清单。它存储的是某个 catalog content 的 on-reference 元数据状态。例如：表和视图通常保存元数据指针及表格式状态，namespace 保存路径元素和属性。
 
 ### 3.6 `IndexObj` 与 `IndexSegmentsObj`
 
@@ -513,26 +577,38 @@ Nessie 需要高效回答三个问题：
 3. 一次提交的 expected state 是否仍成立？
 ```
 
-如果每次都从 HEAD 扫描完整历史，成本会随 commit 数增长。Nessie 通过增量索引和完整索引降低读、diff、merge、OCC 的成本。
+如果每次都从 HEAD 扫描完整历史，成本会随 commit 数增长。Nessie 通过 `incrementalIndex` 与 reference index 的分层结构降低读、diff、merge、OCC 的成本。给定一个 commit，它的有效 catalog state 可以理解为：
 
-| 对象或字段 | 作用 |
-|---|---|
-| `CommitObj.incrementalIndex` | 保存当前 commit 以及自上次完整 index 以来的增量变更 |
-| `CommitObj.referenceIndex` | 指向完整 index 对象；可为 `IndexObj` 或 `IndexSegmentsObj` |
-| `CommitObj.referenceIndexStripes` | 当 stripes 数量较小时，直接内嵌在 commit 中 |
-| `IndexObj.index` | 一个序列化后的 StoreIndex |
-| `IndexSegmentsObj.stripes` | 多个 `IndexStripe`，每个包含 `firstKey`、`lastKey`、`segment` |
-| `IndexStripe.segment` | 指向保存该 key range 索引片段的 `IndexObj` |
+```text
+complete state = reference index baseline + incremental index updates
+```
+
+reference index baseline 可以不存在。不存在时，`incrementalIndex` 就是相对于空基线积累的变更；存在时，`incrementalIndex` 是相对于已物化 baseline 的变更。
+
+三类 index 相关结构分别承担不同职责：
+
+| 对象或字段 | 存放位置 | 存什么 |
+|---|---|---|
+| `CommitObj.incrementalIndex` | commit 对象内的 bytes | 当前 commit 的 `ADD/REMOVE`，以及尚未 spill 的历史 `INCREMENTAL_ADD/INCREMENTAL_REMOVE` |
+| `CommitObj.referenceIndex` | commit 对象内的 `ObjId` | 外置 reference index 的入口；读路径支持它指向单个 `IndexObj` 或 `IndexSegmentsObj` |
+| `CommitObj.referenceIndexStripes` | commit 对象内的 stripe 列表 | 当 stripe 数量不多时，直接内嵌 `[firstKey,lastKey] -> segment` 目录 |
+| `IndexObj.index` | `objs2` 中 `obj_type='i'` 的对象 | 一个序列化后的 `StoreIndex<CommitOp>`；可表示完整 index，也可表示某个 key range segment |
+| `IndexSegmentsObj.stripes` | `objs2` 中 `obj_type='I'` 的对象 | 多个 `IndexStripe`，用于在 stripe 目录太大时外置目录本身 |
+| `IndexStripe.segment` | `IndexStripe` 字段 | 指向保存该 key range index 数据的 `IndexObj` |
+
+`stripe` 是按 key range 切出的分片描述，包含 `firstKey`、`lastKey` 和 `segment`。`segment` 是实际保存这一段 index bytes 的 `IndexObj.id`。因此，`referenceIndexStripes` 与 `referenceIndex -> IndexSegmentsObj` 都表达同一个逻辑 reference index。例如：stripe 目录可以内嵌在 commit 中，也可以外置成 `IndexSegmentsObj`；真正的 index 数据仍在各个 `IndexObj` segment 中。读完整 state 时，Nessie 会先按 `referenceIndex` 或 `referenceIndexStripes` 找到 baseline，再把 `incrementalIndex` 覆盖到 baseline 之上。
+
+`CommitOp.action` 要按“当前 commit 的 incremental index 视角”理解。当前 commit 自己新增或删除的 key 在 `incrementalIndex` 中使用 `ADD` / `REMOVE`。构造子 commit 时，父 commit incremental index 中原本的 `ADD` / `REMOVE` 会作为历史项转成 `INCREMENTAL_ADD` / `INCREMENTAL_REMOVE`，子 commit 自己的新操作仍以 `ADD` / `REMOVE` 写入。这个转换不会回写祖先 commit 对象，只发生在新 commit 的 index 构造过程中。随着 commit 链增长，HEAD 的 `incrementalIndex` 可能包含多代祖先尚未物化的 `INCREMENTAL_*` 项；已经 spill 到 reference index 的历史项不再保留为 incremental action，而是在 reference index 中以 `NONE` 表示“该 key 当前存在，但不是本 commit 的操作”。被删除的 key 会从 reference index 中移除。
+
+当前默认配置中，`max-incremental-index-size` 为 `50 * 1024`，`max-serialized-index-size` 为 `200 * 1024`，`max-reference-stripes-per-commit` 为 `50`。这些阈值是序列化大小或 stripe 数量阈值，不是 commit 数量阈值。写 commit 时，如果 `incrementalIndex` 超过可接受大小，存储层会捕获对象过大错误并执行 spill。例如：当前 commit 的 `ADD/REMOVE` 留在新的小 `incrementalIndex` 中，历史 `INCREMENTAL_ADD/INCREMENTAL_REMOVE` 被合并进 reference index。若原本没有 reference index，就新建 baseline；若已有 reference index，就只更新被历史增量触及的 key range。reference index segment 超过 `max-serialized-index-size` 时会继续按 key range 拆分；stripe 数量不超过 `max-reference-stripes-per-commit` 时，commit 直接保存 `referenceIndexStripes`，超过时再把 stripe 目录外置为 `IndexSegmentsObj` 并由 `referenceIndex` 指向。
 
 `CommitOp.value -> ContentValueObj.id` 是 key 到内容状态的主要物理链接。`IndexObj` 和 `IndexSegmentsObj` 不直接表示业务内容，而是加速从 commit HEAD 到 ContentKey 状态的解析。
 
-当前默认配置中，`max-incremental-index-size` 为 `50 * 1024`，`max-serialized-index-size` 为 `200 * 1024`，`max-reference-stripes-per-commit` 为 `50`。这些阈值决定增量 index 何时需要外置或物化为完整 index，以及完整 index 是否需要分段。
-
 ---
 
-## 4. 三个命令的数据流与记录变化
+## 4. 四个命令的数据流与记录变化
 
-本章沿用第二章的简单例子，但把 `commit`、`create branch`、`merge` 拆开，展示每个命令执行期间 `refs2`、`objs2` 和对象字段的变化。
+本章沿用第二章的简单例子，把 `commit`、`create branch`、`merge`、`transplant` 拆开，展示每个命令执行期间 `refs2`、`objs2` 和对象字段的变化。
 
 ### 4.1 命令一：commit 到 `main`
 
@@ -543,16 +619,16 @@ commit main:
   sales.orders expected=cv_orders_v42 -> cv_orders_v43
 ```
 
-![commit 命令记录变化](gitlike_src/05_commit_command_records.svg)
+![commit 命令记录变化](Nessie_Catalog_GitLike_Principles_And_Flows_src/05_commit_command_records.svg)
 
-字段级含义：
+字段含义如下：
 
 | 项 | 示例值 | 含义 |
 |---|---|---|
 | `ContentKey` | `sales.orders` | Catalog 中的对象名 |
 | `payload` | `ICEBERG_TABLE` | Content 类型 |
 | `contentId` | `orders-content-id` | 逻辑内容对象 ID |
-| `expected value` | `cv_orders_v42` | 提交者认为当前 key 仍应指向的旧 `ContentValueObj.id` |
+| `expected value` | `cv_orders_v42` | 提交者认为当前 key 仍应指向的旧 `ContentValueObj.id`。用于冲突校验，不作为 `CommitOp` 字段持久化 |
 | `new value` | `cv_orders_v43` | 本次提交要写入的新 `ContentValueObj.id` |
 
 执行前：
@@ -581,10 +657,10 @@ objs2 add:
     obj_type = c
     tail[0] = c100
     incrementalIndex:
-      sales.orders -> CommitOp(ADD, value=cv_orders_v43, expected=cv_orders_v42)
+      sales.orders -> CommitOp(ADD, payload=ICEBERG_TABLE, value=cv_orders_v43, contentId=<orders UUID>)
 
-  idx_new:
-    sales.orders -> cv_orders_v43
+  optional index objects:
+    保存完整 index 或 key range segment
 ```
 
 最后更新 reference：
@@ -614,7 +690,7 @@ WHERE ref_name = 'refs/heads/main'
 create branch qa from main
 ```
 
-![create branch 命令记录变化](gitlike_src/06_branch_command_records.svg)
+![create branch 命令记录变化](Nessie_Catalog_GitLike_Principles_And_Flows_src/06_branch_command_records.svg)
 
 执行前：
 
@@ -667,17 +743,19 @@ qa:   c100 -> q101 -> q102
 merge qa into main
 ```
 
-![merge 命令记录变化](gitlike_src/07_merge_command_records.svg)
+![merge 命令记录变化](Nessie_Catalog_GitLike_Principles_And_Flows_src/07_merge_command_records.svg)
+
+merge 记录会写在 target 侧；当前实现的可见产物是一个 squashed merge commit。
 
 执行过程：
 
 ```text
 1. 读取 sourceHead = q102，targetHead = c100。
 2. 找到 commonAncestor = c100。
-3. 提取 q101、q102 中的 CommitOp。
-4. 将这些 CommitOp replay 到 target 当前状态。
-5. 写入 target 侧 commit：m101、m102。
-6. CAS refs/heads/main.pointer: c100 -> m102。
+3. 提取 source 相对 c100 的累计变更，等价于 q101、q102 中的 CommitOp 差异。
+4. 将 source 相对 commonAncestor 的 diff 应用到 target 当前状态。
+5. 当前实现写入一个 target 侧 squashed merge commit：m101。
+6. CAS refs/heads/main.pointer: c100 -> m101。
 ```
 
 记录变化：
@@ -690,33 +768,96 @@ refs2 before:
 objs2 add:
   m101:
     tail[0] = c100
-    secondaryParents = [q101]
-    incrementalIndex = replay(q101.ops)
-
-  m102:
-    tail[0] = m101
     secondaryParents = [q102]
-    incrementalIndex = replay(q102.ops)
+    incrementalIndex = squash(diff(c100, q102))
 
 refs2 after:
-  refs/heads/main.pointer = m102
+  refs/heads/main.pointer = m101
   refs/heads/qa.pointer   = q102
 ```
 
-如果 merge 期间 `main` 已经前进到 `m200`，Nessie 不能直接把 `main` 指到 `q102`。它需要重新以 `m200` 为 target HEAD，重新计算共同祖先、replay source operations、执行 OCC，并最终 CAS 到新的 target-side replay commit。
+如果 merge 期间 `main` 已经前进到 `m200`，Nessie 不能直接把 `main` 指到 `q102`，也不能继续使用基于旧 `c100` 构造的 merge commit。它需要重新以 `m200` 为 target HEAD，重新计算共同祖先、source diff、OCC / namespace 约束，并最终 CAS 到新的 target-side squashed merge commit。
 
 结果分支：
 
 | 分支 | 结果 |
 |---|---|
-| source 变更与 target 当前状态无冲突，CAS 成功 | `main` 前进到 replay 后的新 HEAD |
-| target 已前进但不同 key | 重新 replay 后可成功 |
+| source 变更与 target 当前状态无冲突，CAS 成功 | `main` 前进到 squashed merge commit |
+| target 已前进但不同 key | 重新计算 diff 并生成新的 squashed merge commit 后可成功 |
 | target 已前进且同 key value 冲突 | 返回 merge conflict |
 | source/target ref 不存在 | 返回 not found |
 
+### 4.4 命令四：transplant `[c1,c2]` 到 `branch1`
+
+示例初始状态：
+
+```text
+branch1: c0
+branch2: c0 -> c1 -> c2
+```
+
+示例命令语义：
+
+```text
+transplant [c1, c2] from branch2 into branch1
+```
+
+![transplant 命令记录变化](Nessie_Catalog_GitLike_Principles_And_Flows_src/08_transplant_command_records.svg)
+
+执行过程：
+
+```text
+1. 读取 source commits = [c1, c2]，targetHead = c0。
+2. 校验 c1/c2 能在 branch2 上解析，并且传入顺序连续、有序。
+3. clone c1 的 operations 到 target 当前 HEAD，写入 t1(parent=c0)。
+4. clone c2 的 operations 到 t1 之上，写入 t2(parent=t1)。
+5. CAS refs/heads/branch1.pointer: c0 -> t2。
+```
+
+记录变化：
+
+```text
+refs2 before:
+  refs/heads/branch1.pointer = c0
+  refs/heads/branch2.pointer = c2
+
+objs2 add:
+  t1:
+    tail[0] = c0
+    incrementalIndex = clone(ops(c1))
+
+  t2:
+    tail[0] = t1
+    incrementalIndex = clone(ops(c2))
+
+refs2 after:
+  refs/heads/branch1.pointer = t2
+  refs/heads/branch2.pointer = c2
+```
+
+SQL 形态上，最终可见性仍由一次 reference update 决定：
+
+```sql
+UPDATE refs2
+SET pointer = 't2', prev_ptr = ['c0', ...]
+WHERE ref_name = 'refs/heads/branch1'
+  AND pointer = 'c0'
+  AND deleted = false;
+```
+
+结果分支：
+
+| 分支 | 结果 |
+|---|---|
+| `[c1,c2]` 连续、有序且无冲突，CAS 成功 | `branch1` 前进到 `t2`，历史为 `c0 -> t1 -> t2` |
+| 传入 `[c0,c1,c2]` | 通常不应这样传；`c0` 是共同基点，不是要 replay 的增量提交 |
+| commit hash 不在 `fromRefName` 可解析范围内 | 返回 not found / bad request 类错误 |
+| hash 序列不连续或顺序错误 | 返回 transplant 序列校验错误 |
+| target 当前状态与某个 source commit 的 key 变更冲突 | 整次 transplant 失败，target pointer 不会停在中间 commit |
+
 ---
 
-## 8. 参考资料
+## 5. 参考资料
 
 Iceberg 官方资料：
 
@@ -730,54 +871,48 @@ Iceberg 官方资料：
 - Iceberg `ManageSnapshots` 最新源码：<https://github.com/apache/iceberg/blob/main/api/src/main/java/org/apache/iceberg/ManageSnapshots.java>
 - Iceberg `SnapshotManager` 最新源码：<https://github.com/apache/iceberg/blob/main/core/src/main/java/org/apache/iceberg/SnapshotManager.java>
 
-Iceberg branch/tag 第三方介绍：
-
-- Dremio: Exploring Branches & Tags in Apache Iceberg Using Spark：<https://www.dremio.com/blog/exploring-branch-tags-in-apache-iceberg-using-spark/>
-- Starburst: How Apache Iceberg Branching Transforms Data Management：<https://www.starburst.io/blog/iceberg-branching-data-management/>
-- 腾讯云开发者社区：一文搞懂 Iceberg 的 branch 和 tags：<https://cloud.tencent.com/developer/article/2520801>
-- Apache Doris 文档：Iceberg Catalog 管理 Branch & Tag：<https://doris.apache.org/zh-CN/docs/3.x/lakehouse/catalogs/iceberg-catalog/>
-
 Nessie 官方资料：
 
 - Project Nessie：<https://projectnessie.org/>
-- Nessie Transactions：<https://projectnessie.org/nessie-latest/transactions/>
-- Nessie Iceberg REST guide：<https://projectnessie.org/nessie-latest/guides/iceberg-rest/>
-- Nessie Commit Kernel：<https://projectnessie.org/nessie-latest/develop/kernel/>
-- Dremio: Lakehouse Catalogs 101 - Project Nessie：<https://www.dremio.com/blog/lakehouse-catalogs-101-project-nessie/>
+- Nessie Spec：<https://projectnessie.org/develop/spec/>
+- Nessie Content Types：<https://projectnessie.org/develop/content-types/>
+- Nessie Transactions：<https://projectnessie.org/guides/transactions/>
+- Nessie Iceberg REST guide：<https://projectnessie.org/guides/iceberg-rest/>
+- Nessie Commit Kernel：<https://projectnessie.org/develop/kernel/>
+- Nessie Release Notes 0.50.0 to 0.69.2：<https://projectnessie.org/releases-0.69/>
+- Nessie PR #7035：<https://github.com/projectnessie/nessie/pull/7035>
+- Nessie PR #7516：<https://github.com/projectnessie/nessie/pull/7516>
+- Nessie issue #4562：<https://github.com/projectnessie/nessie/issues/4562>
 
 Nessie 源码核验版本：
 
-- Nessie repository：<https://github.com/projectnessie/nessie/tree/3de486e26aa0809bb07be3fa46eeeb24e4d2c318>
-- `Persist`：<https://github.com/projectnessie/nessie/blob/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/persist/Persist.java>
-- `Reference`：<https://github.com/projectnessie/nessie/blob/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/persist/Reference.java>
-- `ObjIdHasherImpl`：<https://github.com/projectnessie/nessie/blob/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/persist/ObjIdHasherImpl.java>
-- `CommitObj`：<https://github.com/projectnessie/nessie/blob/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/objtypes/CommitObj.java>
-- `CommitOp`：<https://github.com/projectnessie/nessie/blob/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/objtypes/CommitOp.java>
-- `ContentValueObj`：<https://github.com/projectnessie/nessie/blob/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/objtypes/ContentValueObj.java>
-- `IndexObj`：<https://github.com/projectnessie/nessie/blob/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/objtypes/IndexObj.java>
-- `IndexSegmentsObj`：<https://github.com/projectnessie/nessie/blob/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/objtypes/IndexSegmentsObj.java>
-- `IndexStripe`：<https://github.com/projectnessie/nessie/blob/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/objtypes/IndexStripe.java>
-- `CommitLogicImpl`：<https://github.com/projectnessie/nessie/blob/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/logic/CommitLogicImpl.java>
-- `MergeBase`：<https://github.com/projectnessie/nessie/blob/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/logic/MergeBase.java>
-- `CommitRetry`：<https://github.com/projectnessie/nessie/blob/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/logic/CommitRetry.java>
-- `StoreConfig`：<https://github.com/projectnessie/nessie/blob/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/config/StoreConfig.java>
-- JDBC2 backend schema：<https://github.com/projectnessie/nessie/blob/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/versioned/storage/jdbc2/src/main/java/org/projectnessie/versioned/storage/jdbc2/Jdbc2Backend.java>
-- JDBC2 constants：<https://github.com/projectnessie/nessie/blob/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/versioned/storage/jdbc2/src/main/java/org/projectnessie/versioned/storage/jdbc2/SqlConstants.java>
-- API model `IcebergTable` / `Content`：<https://github.com/projectnessie/nessie/tree/3de486e26aa0809bb07be3fa46eeeb24e4d2c318/api/model/src/main/java/org/projectnessie/model>
-
-本地材料：
-
-- `Industry/nessie-research.md`
-- `Industry/git-like/Catalog_GitLike_Research_Report.md`
-
-本文图表资源：
-
-- `gitlike_src/00_iceberg_single_table_versioning.svg`
-- `gitlike_src/01_nessie_refs_objs_abstract.svg`
-- `gitlike_src/02a_commit_abstract_flow.svg`
-- `gitlike_src/02b_branch_abstract_flow.svg`
-- `gitlike_src/02c_merge_abstract_flow.svg`
-- `gitlike_src/03_object_graph_detailed.svg`
-- `gitlike_src/05_commit_command_records.svg`
-- `gitlike_src/06_branch_command_records.svg`
-- `gitlike_src/07_merge_command_records.svg`
+- 初版核验 repository：<https://github.com/projectnessie/nessie/tree/3de486e26aa0809bb07be3fa46eeeb24e4d2c318>
+- 本次复核 `origin/main@006a5387187999599b9b1c9009d8c38fc5f49844`（2026-05-11）：<https://github.com/projectnessie/nessie/tree/006a5387187999599b9b1c9009d8c38fc5f49844>
+- `Persist`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/persist/Persist.java>
+- `Reference`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/persist/Reference.java>
+- `ObjIdHasherImpl`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/persist/ObjIdHasherImpl.java>
+- `CommitObj`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/objtypes/CommitObj.java>
+- `CommitOp`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/objtypes/CommitOp.java>
+- `ContentValueObj`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/objtypes/ContentValueObj.java>
+- `IndexObj`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/objtypes/IndexObj.java>
+- `IndexSegmentsObj`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/objtypes/IndexSegmentsObj.java>
+- `IndexStripe`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/objtypes/IndexStripe.java>
+- `CommitLogicImpl`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/logic/CommitLogicImpl.java>
+- `Namespace`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/api/model/src/main/java/org/projectnessie/model/Namespace.java>
+- `NamespaceSerializer`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/servers/store/src/main/java/org/projectnessie/server/store/NamespaceSerializer.java>
+- `BaseCommitHelper`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/store/src/main/java/org/projectnessie/versioned/storage/versionstore/BaseCommitHelper.java>
+- `VersionStoreImpl`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/store/src/main/java/org/projectnessie/versioned/storage/versionstore/VersionStoreImpl.java>
+- `MergeSquashImpl`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/store/src/main/java/org/projectnessie/versioned/storage/versionstore/MergeSquashImpl.java>
+- `BaseMergeTransplantSquash`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/store/src/main/java/org/projectnessie/versioned/storage/versionstore/BaseMergeTransplantSquash.java>
+- `TransplantIndividualImpl`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/store/src/main/java/org/projectnessie/versioned/storage/versionstore/TransplantIndividualImpl.java>
+- v2 `HttpMergeReference`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/api/client/src/main/java/org/projectnessie/client/rest/v2/HttpMergeReference.java>
+- v2 `HttpTransplantCommits`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/api/client/src/main/java/org/projectnessie/client/rest/v2/HttpTransplantCommits.java>
+- v1 `RestTreeResource`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/servers/rest-services/src/main/java/org/projectnessie/services/rest/RestTreeResource.java>
+- `ProtoSerialization`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/common-serialize/src/main/java/org/projectnessie/versioned/storage/serialize/ProtoSerialization.java>
+- `storage.proto`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/common-proto/src/main/proto/org/projectnessie/versioned/storage/common/proto/storage.proto>
+- `MergeBase`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/logic/MergeBase.java>
+- `CommitRetry`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/logic/CommitRetry.java>
+- `StoreConfig`：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/common/src/main/java/org/projectnessie/versioned/storage/common/config/StoreConfig.java>
+- JDBC2 backend schema：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/jdbc2/src/main/java/org/projectnessie/versioned/storage/jdbc2/Jdbc2Backend.java>
+- JDBC2 constants：<https://github.com/projectnessie/nessie/blob/006a5387187999599b9b1c9009d8c38fc5f49844/versioned/storage/jdbc2/src/main/java/org/projectnessie/versioned/storage/jdbc2/SqlConstants.java>
+- API model `IcebergTable` / `Content`：<https://github.com/projectnessie/nessie/tree/006a5387187999599b9b1c9009d8c38fc5f49844/api/model/src/main/java/org/projectnessie/model>

@@ -39,6 +39,7 @@
   <text x="806" y="288" class="mono">c101</text>
   <rect x="950" y="250" width="120" height="64" class="commit"/>
   <text x="986" y="288" class="mono">c102</text>
+  <text x="986" y="240" class="s" text-anchor="middle">HEAD</text>
   <path d="M710 282 L770 282" class="line"/>
   <path d="M890 282 L950 282" class="line"/>
 
@@ -47,7 +48,7 @@
   <rect x="950" y="420" width="120" height="64" class="val"/>
   <text x="984" y="458" class="mono">cv43</text>
 
-  <path d="M370 230 C435 220 500 245 590 270" class="line"/>
+  <path d="M370 230 C560 220 760 238 950 270" class="line"/>
   <path d="M370 280 C485 290 610 292 770 282" class="line"/>
   <path d="M1010 314 L850 420" class="dash"/>
   <path d="M890 452 L950 452" class="dash"/>

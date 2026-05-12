@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-label="Nessie transplant 抽象流程图">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .title{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:30px;font-weight:700;fill:#0f172a}
+      .h{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:22px;font-weight:700;fill:#0f172a}
+      .t{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:18px;fill:#334155}
+      .s{font-family:Arial,"Microsoft YaHei",sans-serif;font-size:16px;fill:#475569}
+      .mono{font-family:Consolas,"Microsoft YaHei",monospace;font-size:17px;fill:#1e293b}
+      .panel{fill:#fff;stroke:#cbd5e1;stroke-width:2;rx:10}
+      .src{fill:#eef2ff;stroke:#818cf8;stroke-width:2;rx:10}
+      .dst{fill:#ecfdf5;stroke:#34d399;stroke-width:2;rx:10}
+      .box{fill:#fffbeb;stroke:#f59e0b;stroke-width:2;rx:10}
+      .line{stroke:#334155;stroke-width:2.2;fill:none;marker-end:url(#arrow)}
+      .dash{stroke:#64748b;stroke-width:2;stroke-dasharray:7 6;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <rect width="1280" height="720" fill="#f8fafc"/>
+  <text x="48" y="56" class="title">Transplant 抽象流程：保留 individual commits</text>
+
+  <rect x="64" y="112" width="1148" height="480" class="panel"/>
+  <text x="96" y="160" class="h">source branch2</text>
+  <text x="96" y="430" class="h">target branch1</text>
+
+  <rect x="260" y="190" width="112" height="58" class="src"/>
+  <text x="293" y="226" class="mono">c0</text>
+  <rect x="470" y="190" width="112" height="58" class="src"/>
+  <text x="503" y="226" class="mono">c1</text>
+  <rect x="680" y="190" width="112" height="58" class="src"/>
+  <text x="713" y="226" class="mono">c2</text>
+  <path d="M372 219 L470 219" class="dash"/>
+  <path d="M582 219 L680 219" class="dash"/>
+  <text x="454" y="168" class="s">hashesToTransplant = [c1, c2]</text>
+
+  <rect x="260" y="455" width="112" height="58" class="dst"/>
+  <text x="293" y="491" class="mono">c0</text>
+  <rect x="470" y="455" width="112" height="58" class="dst"/>
+  <text x="503" y="491" class="mono">t1</text>
+  <rect x="680" y="455" width="112" height="58" class="dst"/>
+  <text x="713" y="491" class="mono">t2</text>
+  <path d="M372 484 L470 484" class="line"/>
+  <path d="M582 484 L680 484" class="line"/>
+  <text x="482" y="540" class="s">target history: c0 -> t1 -> t2</text>
+
+  <path d="M526 248 C520 310 520 390 526 455" class="dash"/>
+  <path d="M736 248 C730 310 730 390 736 455" class="dash"/>
+  <text x="810" y="338" class="s">clone operations</text>
+
+  <rect x="900" y="356" width="235" height="122" class="box"/>
+  <text x="930" y="400" class="h">final pointer update</text>
+  <text x="930" y="438" class="mono">branch1: c0 -> t2</text>
+  <path d="M792 484 C850 472 875 448 900 424" class="line"/>
+
+  <text x="96" y="638" class="t">每个 source commit 被重放成 target 侧新 commit；只有最后一次 reference update 成功后，整段 transplant 才可见。</text>
+</svg>
