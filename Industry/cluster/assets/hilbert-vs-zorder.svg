@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="420" viewBox="0 0 940 420" role="img" aria-labelledby="title desc">
+  <title id="title">Z-order 与 Hilbert Curve 的 4x4 访问路径对比</title>
+  <desc id="desc">左侧展示 Z-order 在 4x4 网格中的访问顺序，右侧展示 Hilbert Curve 在 4x4 网格中的连续折线路径。两者都把二维网格映射成一维顺序，但 Hilbert 的路径更连续。</desc>
+  <defs>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#16a34a"/>
+    </marker>
+    <style>
+      .bg { fill: #fffdf7; }
+      .title { font: 700 24px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #1f2937; }
+      .label { font: 600 15px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #334155; }
+      .note { font: 13px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #64748b; }
+      .grid { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.4; }
+      .major { fill: none; stroke: #475569; stroke-width: 2.4; }
+      .zline { fill: none; stroke: #2563eb; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrowBlue); }
+      .hline { fill: none; stroke: #16a34a; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrowGreen); }
+      .start { fill: #f59e0b; stroke: #92400e; stroke-width: 1.5; }
+      .end { fill: #ef4444; stroke: #991b1b; stroke-width: 1.5; }
+      .num { font: 600 12px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #334155; text-anchor: middle; dominant-baseline: middle; }
+      .caption { font: 14px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #475569; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="940" height="420"/>
+  <text class="title" x="70" y="48">Z-order：按高位分块，边界处可能跳远</text>
+  <text class="title" x="545" y="48">Hilbert Curve：递归折返，路径更连续</text>
+
+  <g transform="translate(90 86)">
+    <text class="note" x="0" y="-14">同样是 4x4 网格，数字表示一维访问顺序</text>
+    <rect class="grid" x="0" y="0" width="60" height="60"/><rect class="grid" x="60" y="0" width="60" height="60"/><rect class="grid" x="120" y="0" width="60" height="60"/><rect class="grid" x="180" y="0" width="60" height="60"/>
+    <rect class="grid" x="0" y="60" width="60" height="60"/><rect class="grid" x="60" y="60" width="60" height="60"/><rect class="grid" x="120" y="60" width="60" height="60"/><rect class="grid" x="180" y="60" width="60" height="60"/>
+    <rect class="grid" x="0" y="120" width="60" height="60"/><rect class="grid" x="60" y="120" width="60" height="60"/><rect class="grid" x="120" y="120" width="60" height="60"/><rect class="grid" x="180" y="120" width="60" height="60"/>
+    <rect class="grid" x="0" y="180" width="60" height="60"/><rect class="grid" x="60" y="180" width="60" height="60"/><rect class="grid" x="120" y="180" width="60" height="60"/><rect class="grid" x="180" y="180" width="60" height="60"/>
+    <path class="major" d="M120 0 V240 M0 120 H240"/>
+    <path class="zline" d="M30 210 L90 210 L30 150 L90 150 L150 210 L210 210 L150 150 L210 150 L30 90 L90 90 L30 30 L90 30 L150 90 L210 90 L150 30 L210 30"/>
+    <circle class="start" cx="30" cy="210" r="8"/><circle class="end" cx="210" cy="30" r="8"/>
+    <text class="num" x="30" y="210">0</text><text class="num" x="90" y="210">1</text><text class="num" x="30" y="150">2</text><text class="num" x="90" y="150">3</text>
+    <text class="num" x="150" y="210">4</text><text class="num" x="210" y="210">5</text><text class="num" x="150" y="150">6</text><text class="num" x="210" y="150">7</text>
+    <text class="num" x="30" y="90">8</text><text class="num" x="90" y="90">9</text><text class="num" x="30" y="30">10</text><text class="num" x="90" y="30">11</text>
+    <text class="num" x="150" y="90">12</text><text class="num" x="210" y="90">13</text><text class="num" x="150" y="30">14</text><text class="num" x="210" y="30">15</text>
+    <text class="caption" x="0" y="282">例如从 7 到 8，会从右中区域跳到左上区域。</text>
+  </g>
+
+  <g transform="translate(595 86)">
+    <text class="note" x="0" y="-14">Hilbert 尽量让相邻编号仍落在相邻格子</text>
+    <rect class="grid" x="0" y="0" width="60" height="60"/><rect class="grid" x="60" y="0" width="60" height="60"/><rect class="grid" x="120" y="0" width="60" height="60"/><rect class="grid" x="180" y="0" width="60" height="60"/>
+    <rect class="grid" x="0" y="60" width="60" height="60"/><rect class="grid" x="60" y="60" width="60" height="60"/><rect class="grid" x="120" y="60" width="60" height="60"/><rect class="grid" x="180" y="60" width="60" height="60"/>
+    <rect class="grid" x="0" y="120" width="60" height="60"/><rect class="grid" x="60" y="120" width="60" height="60"/><rect class="grid" x="120" y="120" width="60" height="60"/><rect class="grid" x="180" y="120" width="60" height="60"/>
+    <rect class="grid" x="0" y="180" width="60" height="60"/><rect class="grid" x="60" y="180" width="60" height="60"/><rect class="grid" x="120" y="180" width="60" height="60"/><rect class="grid" x="180" y="180" width="60" height="60"/>
+    <path class="major" d="M120 0 V240 M0 120 H240"/>
+    <path class="hline" d="M30 210 L30 150 L90 150 L90 210 L150 210 L210 210 L210 150 L150 150 L150 90 L210 90 L210 30 L150 30 L90 30 L90 90 L30 90 L30 30"/>
+    <circle class="start" cx="30" cy="210" r="8"/><circle class="end" cx="30" cy="30" r="8"/>
+    <text class="num" x="30" y="210">0</text><text class="num" x="30" y="150">1</text><text class="num" x="90" y="150">2</text><text class="num" x="90" y="210">3</text>
+    <text class="num" x="150" y="210">4</text><text class="num" x="210" y="210">5</text><text class="num" x="210" y="150">6</text><text class="num" x="150" y="150">7</text>
+    <text class="num" x="150" y="90">8</text><text class="num" x="210" y="90">9</text><text class="num" x="210" y="30">10</text><text class="num" x="150" y="30">11</text>
+    <text class="num" x="90" y="30">12</text><text class="num" x="90" y="90">13</text><text class="num" x="30" y="90">14</text><text class="num" x="30" y="30">15</text>
+    <text class="caption" x="0" y="282">路径连续折返，减少大范围跳跃。</text>
+  </g>
+
+  <text class="note" x="82" y="396">注意：这只是 4x4 网格上的直观示意。真实系统会先把列值离散化，再计算对应曲线编号。</text>
+</svg>

@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="620" viewBox="0 0 1040 620" role="img" aria-labelledby="title desc">
+  <title id="title">二维聚簇前后数据文件分布示意图</title>
+  <desc id="desc">左右两侧使用相同的 age 和 income 散点坐标。聚簇前查询范围内的数据分散在多个文件；聚簇后真实数据坐标不变，但同一二维范围内的数据集中到更少文件。</desc>
+  <defs>
+    <filter id="rough" x="-3%" y="-3%" width="106%" height="106%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="2" seed="11" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.1"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg { fill: #fffdf7; }
+      .ink { stroke: #334155; stroke-width: 2.1; stroke-linecap: round; stroke-linejoin: round; fill: none; filter: url(#rough); }
+      .thin { stroke-width: 1.35; }
+      .title { font: 700 24px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #1f2937; }
+      .label { font: 600 15px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #334155; }
+      .small { font: 13px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #475569; }
+      .note { font: 13px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #64748b; }
+      .file { fill: #ffffff; stroke: #334155; stroke-width: 1.9; rx: 8; filter: url(#rough); }
+      .query { fill: #fef3c7; stroke: #b45309; stroke-width: 2; stroke-dasharray: 6 4; filter: url(#rough); }
+      .qdot { fill: #f59e0b; stroke: #92400e; stroke-width: 1.2; }
+      .f1 { fill: #60a5fa; stroke: #1d4ed8; stroke-width: 1.1; }
+      .f2 { fill: #f59e0b; stroke: #92400e; stroke-width: 1.1; }
+      .f3 { fill: #22c55e; stroke: #15803d; stroke-width: 1.1; }
+      .f4 { fill: #a78bfa; stroke: #6d28d9; stroke-width: 1.1; }
+      .f5 { fill: #f43f5e; stroke: #be123c; stroke-width: 1.1; }
+      .chip { stroke-width: 1.4; filter: url(#rough); }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1040" height="620"/>
+
+  <text class="title" x="96" y="50">聚簇前：二维范围命中多个文件</text>
+  <text class="title" x="620" y="50">聚簇后：坐标不变，文件分布更集中</text>
+  <text class="note" x="116" y="76">同一查询矩形里的数据点散落在 file-1/file-2/file-4/file-5</text>
+  <text class="note" x="630" y="76">同一批数据点仍在原坐标，但主要落入 file-2</text>
+
+  <g transform="translate(62 108)">
+    <text class="label" x="0" y="-14">文件中的数据片段</text>
+    <rect class="file" x="0" y="0" width="82" height="54"/>
+    <rect class="file" x="92" y="0" width="82" height="54"/>
+    <rect class="file" x="184" y="0" width="82" height="54"/>
+    <rect class="file" x="276" y="0" width="82" height="54"/>
+    <rect class="file" x="368" y="0" width="82" height="54"/>
+    <text class="small" x="17" y="72">file-1</text>
+    <text class="small" x="109" y="72">file-2</text>
+    <text class="small" x="201" y="72">file-3</text>
+    <text class="small" x="293" y="72">file-4</text>
+    <text class="small" x="385" y="72">file-5</text>
+
+    <circle class="qdot" cx="18" cy="17" r="6"/><circle class="f3" cx="38" cy="17" r="6"/><circle class="f5" cx="60" cy="17" r="6"/>
+    <circle class="f1" cx="27" cy="37" r="6"/><circle class="qdot" cx="55" cy="37" r="6"/>
+
+    <circle class="qdot" cx="112" cy="18" r="6"/><circle class="f1" cx="135" cy="18" r="6"/><circle class="f4" cx="156" cy="18" r="6"/>
+    <circle class="f3" cx="122" cy="38" r="6"/><circle class="qdot" cx="150" cy="38" r="6"/>
+
+    <circle class="f3" cx="204" cy="19" r="6"/><circle class="f1" cx="228" cy="19" r="6"/><circle class="f5" cx="250" cy="19" r="6"/>
+    <circle class="f4" cx="214" cy="38" r="6"/><circle class="f3" cx="244" cy="38" r="6"/>
+
+    <circle class="qdot" cx="294" cy="18" r="6"/><circle class="f4" cx="318" cy="18" r="6"/><circle class="f1" cx="340" cy="18" r="6"/>
+    <circle class="f5" cx="307" cy="38" r="6"/><circle class="qdot" cx="335" cy="38" r="6"/>
+
+    <circle class="f1" cx="386" cy="18" r="6"/><circle class="qdot" cx="410" cy="18" r="6"/><circle class="f3" cx="432" cy="18" r="6"/>
+    <circle class="f5" cx="398" cy="38" r="6"/><circle class="qdot" cx="426" cy="38" r="6"/>
+  </g>
+
+  <g transform="translate(580 108)">
+    <text class="label" x="0" y="-14">文件中的数据片段</text>
+    <rect class="file" x="0" y="0" width="82" height="54"/>
+    <rect class="file" x="92" y="0" width="82" height="54"/>
+    <rect class="file" x="184" y="0" width="82" height="54"/>
+    <rect class="file" x="276" y="0" width="82" height="54"/>
+    <rect class="file" x="368" y="0" width="82" height="54"/>
+    <text class="small" x="17" y="72">file-1</text>
+    <text class="small" x="109" y="72">file-2</text>
+    <text class="small" x="201" y="72">file-3</text>
+    <text class="small" x="293" y="72">file-4</text>
+    <text class="small" x="385" y="72">file-5</text>
+
+    <circle class="f1" cx="19" cy="18" r="6"/><circle class="f1" cx="43" cy="18" r="6"/><circle class="f3" cx="64" cy="18" r="6"/>
+    <circle class="f1" cx="30" cy="38" r="6"/><circle class="f3" cx="56" cy="38" r="6"/>
+
+    <circle class="qdot" cx="110" cy="16" r="6"/><circle class="qdot" cx="132" cy="16" r="6"/><circle class="qdot" cx="154" cy="16" r="6"/>
+    <circle class="qdot" cx="116" cy="36" r="6"/><circle class="qdot" cx="139" cy="36" r="6"/><circle class="qdot" cx="160" cy="36" r="6"/>
+
+    <circle class="f3" cx="204" cy="18" r="6"/><circle class="f3" cx="228" cy="18" r="6"/><circle class="f4" cx="250" cy="18" r="6"/>
+    <circle class="f3" cx="214" cy="38" r="6"/><circle class="f4" cx="244" cy="38" r="6"/>
+
+    <circle class="f4" cx="294" cy="18" r="6"/><circle class="f4" cx="318" cy="18" r="6"/><circle class="f5" cx="340" cy="18" r="6"/>
+    <circle class="f4" cx="307" cy="38" r="6"/><circle class="f5" cx="335" cy="38" r="6"/>
+
+    <circle class="f5" cx="386" cy="18" r="6"/><circle class="f5" cx="410" cy="18" r="6"/><circle class="f5" cx="432" cy="18" r="6"/>
+    <circle class="f1" cx="398" cy="38" r="6"/><circle class="f5" cx="426" cy="38" r="6"/>
+  </g>
+
+  <path class="ink" d="M486 130 C515 123, 543 123, 568 130" marker-end="url(#arrow)"/>
+  <text class="label" x="462" y="108">聚簇重排</text>
+
+  <g transform="translate(86 260)">
+    <text class="label" x="0" y="-22">真实数据坐标：聚簇前</text>
+    <line class="ink" x1="0" y1="270" x2="390" y2="270" marker-end="url(#arrow)"/>
+    <line class="ink" x1="0" y1="270" x2="0" y2="0" marker-end="url(#arrow)"/>
+    <text class="small" x="360" y="294">age</text>
+    <text class="small" x="-26" y="-8">income</text>
+    <rect class="query" x="95" y="96" width="78" height="102"/>
+    <text class="note" x="184" y="130">query:</text>
+    <text class="note" x="184" y="150">age 20-30</text>
+    <text class="note" x="184" y="170">income 100k-300k</text>
+
+    <circle class="f1" cx="22" cy="220" r="6"/><circle class="f1" cx="40" cy="72" r="6"/><circle class="f3" cx="58" cy="150" r="6"/>
+    <circle class="f2" cx="98" cy="180" r="6"/><circle class="f5" cx="112" cy="138" r="6"/><circle class="f4" cx="130" cy="166" r="6"/>
+    <circle class="f1" cx="146" cy="112" r="6"/><circle class="f2" cx="166" cy="150" r="6"/>
+    <circle class="f3" cx="210" cy="82" r="6"/><circle class="f3" cx="230" cy="198" r="6"/><circle class="f4" cx="252" cy="132" r="6"/>
+    <circle class="f4" cx="276" cy="220" r="6"/><circle class="f5" cx="310" cy="96" r="6"/><circle class="f5" cx="340" cy="176" r="6"/>
+    <circle class="f1" cx="358" cy="52" r="6"/>
+  </g>
+
+  <g transform="translate(596 260)">
+    <text class="label" x="0" y="-22">真实数据坐标：聚簇后</text>
+    <line class="ink" x1="0" y1="270" x2="390" y2="270" marker-end="url(#arrow)"/>
+    <line class="ink" x1="0" y1="270" x2="0" y2="0" marker-end="url(#arrow)"/>
+    <text class="small" x="360" y="294">age</text>
+    <text class="small" x="-26" y="-8">income</text>
+    <rect class="query" x="95" y="96" width="78" height="102"/>
+    <text class="note" x="184" y="130">same points</text>
+    <text class="note" x="184" y="150">same query</text>
+    <text class="note" x="184" y="170">different files</text>
+
+    <circle class="f1" cx="22" cy="220" r="6"/><circle class="f1" cx="40" cy="72" r="6"/><circle class="f1" cx="58" cy="150" r="6"/>
+    <circle class="qdot" cx="98" cy="180" r="6"/><circle class="qdot" cx="112" cy="138" r="6"/><circle class="qdot" cx="130" cy="166" r="6"/>
+    <circle class="qdot" cx="146" cy="112" r="6"/><circle class="qdot" cx="166" cy="150" r="6"/>
+    <circle class="f3" cx="210" cy="82" r="6"/><circle class="f3" cx="230" cy="198" r="6"/><circle class="f3" cx="252" cy="132" r="6"/>
+    <circle class="f4" cx="276" cy="220" r="6"/><circle class="f5" cx="310" cy="96" r="6"/><circle class="f5" cx="340" cy="176" r="6"/>
+    <circle class="f5" cx="358" cy="52" r="6"/>
+  </g>
+
+  <g transform="translate(88 584)">
+    <circle class="f1" cx="0" cy="-4" r="6"/><text class="small" x="12" y="0">file-1</text>
+    <circle class="f2" cx="74" cy="-4" r="6"/><text class="small" x="86" y="0">file-2</text>
+    <circle class="f3" cx="148" cy="-4" r="6"/><text class="small" x="160" y="0">file-3</text>
+    <circle class="f4" cx="222" cy="-4" r="6"/><text class="small" x="234" y="0">file-4</text>
+    <circle class="f5" cx="296" cy="-4" r="6"/><text class="small" x="308" y="0">file-5</text>
+    <text class="note" x="420" y="0">注意：左右散点坐标完全相同，变化的是点被组织到哪个文件。</text>
+  </g>
+</svg>
