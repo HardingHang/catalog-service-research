@@ -406,7 +406,7 @@ OTree 对增量数据的处理，和 Z-order/Hilbert 不一样。新记录不是
 
 > OTree 不是另一种排序曲线，而是一种把多维空间直接切成树的布局和索引体系。
 
-## 2.4 xsore mck
+## 2.4 xstore mck
 
 ### 核心原理
 
