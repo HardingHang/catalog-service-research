@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="500" viewBox="0 0 960 500" role="img" aria-labelledby="title desc">
+  <title id="title">OTree 四叉树结构示意图</title>
+  <desc id="desc">展示二维 OTree 中 root cube 切分为四个子 cube，且 C00 继续切分为四个更小 cube 的树形结构。</desc>
+  <defs>
+    <style>
+      .bg { fill: #fffdf7; }
+      .node { fill: #ffffff; stroke: #334155; stroke-width: 1.6; rx: 8; }
+      .root { fill: #eff6ff; stroke: #2563eb; stroke-width: 2; }
+      .split { fill: #f0fdf4; stroke: #16a34a; stroke-width: 2; }
+      .empty { fill: #f8fafc; stroke: #94a3b8; stroke-width: 1.4; }
+      .line { stroke: #64748b; stroke-width: 1.6; fill: none; }
+      .title { font: 700 24px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #1f2937; }
+      .text { font: 600 15px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #1f2937; text-anchor: middle; }
+      .small { font: 13px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #475569; text-anchor: middle; }
+      .note { font: 14px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #64748b; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="960" height="500"/>
+  <text class="title" x="48" y="46">OTree 的二维切分更像四叉树</text>
+  <text class="note" x="48" y="76">每个 cube 超过容量 cap 后，在 age 和 income 两个维度上同时对半切，生成 4 个子 cube。</text>
+
+  <rect class="node root" x="390" y="105" width="180" height="70"/>
+  <text class="text" x="480" y="132">root cube</text>
+  <text class="small" x="480" y="155">[0,1] x [0,1]</text>
+
+  <path class="line" d="M480 175 V215 M160 215 H800"/>
+  <path class="line" d="M160 215 V245"/>
+  <path class="line" d="M372 215 V245"/>
+  <path class="line" d="M588 215 V245"/>
+  <path class="line" d="M800 215 V245"/>
+
+  <rect class="node split" x="80" y="245" width="160" height="80"/>
+  <text class="text" x="160" y="273">C00</text>
+  <text class="small" x="160" y="296">[0,0.5] x [0,0.5]</text>
+  <text class="small" x="160" y="316">超过 cap，继续切</text>
+
+  <rect class="node empty" x="292" y="245" width="160" height="80"/>
+  <text class="text" x="372" y="273">C10</text>
+  <text class="small" x="372" y="296">[0.5,1] x [0,0.5]</text>
+  <text class="small" x="372" y="316">当前为空</text>
+
+  <rect class="node" x="508" y="245" width="160" height="80"/>
+  <text class="text" x="588" y="273">C01</text>
+  <text class="small" x="588" y="296">[0,0.5] x [0.5,1]</text>
+  <text class="small" x="588" y="316">e5</text>
+
+  <rect class="node" x="720" y="245" width="160" height="80"/>
+  <text class="text" x="800" y="273">C11</text>
+  <text class="small" x="800" y="296">[0.5,1] x [0.5,1]</text>
+  <text class="small" x="800" y="316">e3, e4</text>
+
+  <path class="line" d="M160 325 V365 M80 365 H455"/>
+  <path class="line" d="M80 365 V390"/>
+  <path class="line" d="M205 365 V390"/>
+  <path class="line" d="M330 365 V390"/>
+  <path class="line" d="M455 365 V390"/>
+
+  <rect class="node" x="25" y="390" width="110" height="70"/>
+  <text class="text" x="80" y="417">C00-00</text>
+  <text class="small" x="80" y="441">e1, e2</text>
+
+  <rect class="node" x="150" y="390" width="110" height="70"/>
+  <text class="text" x="205" y="417">C00-10</text>
+  <text class="small" x="205" y="441">e6</text>
+
+  <rect class="node" x="275" y="390" width="110" height="70"/>
+  <text class="text" x="330" y="417">C00-01</text>
+  <text class="small" x="330" y="441">e7</text>
+
+  <rect class="node" x="400" y="390" width="110" height="70"/>
+  <text class="text" x="455" y="417">C00-11</text>
+  <text class="small" x="455" y="441">e8</text>
+</svg>
