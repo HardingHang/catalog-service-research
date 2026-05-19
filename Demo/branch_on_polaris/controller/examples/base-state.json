@@ -1,0 +1,14 @@
+{
+  "tables": {
+    "sales.customers": {
+      "metadata_location": "s3://warehouse/sales/customers/metadata/v1.metadata.json",
+      "schema_id": "0",
+      "snapshot_id": "2001"
+    },
+    "sales.orders": {
+      "metadata_location": "s3://warehouse/sales/orders/metadata/v1.metadata.json",
+      "schema_id": "0",
+      "snapshot_id": "1001"
+    }
+  }
+}

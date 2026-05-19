@@ -1,0 +1,223 @@
+services:
+  rustfs:
+    image: rustfs/rustfs:1.0.0-alpha.81
+    container_name: cjydemo-rustfs
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      RUSTFS_ACCESS_KEY: polaris_root
+      RUSTFS_SECRET_KEY: polaris_pass
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://127.0.0.1:9000/health && curl --fail http://127.0.0.1:9001/rustfs/console/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  bucket-setup:
+    image: amazon/aws-cli:2.34.9
+    container_name: cjydemo-bucket-setup
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: polaris_root
+      AWS_SECRET_ACCESS_KEY: polaris_pass
+      AWS_ENDPOINT_URL: http://rustfs:9000
+    entrypoint: "/bin/sh"
+    command:
+      - "-c"
+      - >-
+        echo Creating RustFS bucket... &&
+        aws s3 mb s3://bucket123 || true &&
+        aws s3 ls &&
+        echo Bucket setup complete.
+
+  polaris:
+    image: apache/polaris:1.4.1
+    container_name: cjydemo-polaris
+    ports:
+      - "8181:8181"
+      - "8182:8182"
+      - "5005:5005"
+    depends_on:
+      rustfs:
+        condition: service_healthy
+      bucket-setup:
+        condition: service_completed_successfully
+    environment:
+      JAVA_DEBUG: "true"
+      JAVA_DEBUG_PORT: "*:5005"
+      AWS_REGION: us-west-2
+      AWS_ACCESS_KEY_ID: polaris_root
+      AWS_SECRET_ACCESS_KEY: polaris_pass
+      POLARIS_BOOTSTRAP_CREDENTIALS: POLARIS,root,s3cr3t
+      POLARIS_REALM_CONTEXT_REALMS: POLARIS
+      QUARKUS_OTEL_SDK_DISABLED: "true"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8182/q/health"]
+      interval: 2s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  polaris-setup:
+    image: alpine/curl:8.17.0
+    container_name: cjydemo-polaris-setup
+    depends_on:
+      polaris:
+        condition: service_healthy
+    environment:
+      CLIENT_ID: root
+      CLIENT_SECRET: s3cr3t
+      CATALOG_NAME: quickstart_catalog
+      REALM: POLARIS
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        apk add --no-cache jq
+
+        echo "Obtaining root access token..."
+        TOKEN_RESPONSE=$$(curl --fail-with-body -s -S -X POST http://polaris:8181/api/catalog/v1/oauth/tokens \
+          -H 'Content-Type: application/x-www-form-urlencoded' \
+          -d "grant_type=client_credentials&client_id=$${CLIENT_ID}&client_secret=$${CLIENT_SECRET}&scope=PRINCIPAL_ROLE:ALL")
+        TOKEN=$$(echo "$$TOKEN_RESPONSE" | jq -r '.access_token')
+        test -n "$$TOKEN"
+        test "$$TOKEN" != "null"
+
+        echo "Creating catalog '$$CATALOG_NAME'..."
+        PAYLOAD='{
+          "catalog": {
+            "name": "'$$CATALOG_NAME'",
+            "type": "INTERNAL",
+            "readOnly": false,
+            "properties": {
+              "default-base-location": "s3://bucket123"
+            },
+            "storageConfigInfo": {
+              "storageType": "S3",
+              "allowedLocations": ["s3://bucket123"],
+              "endpoint": "http://rustfs:9000",
+              "endpointInternal": "http://rustfs:9000",
+              "pathStyleAccess": true
+            }
+          }
+        }'
+        curl --fail-with-body -s -S -X POST http://polaris:8181/api/management/v1/catalogs \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Accept: application/json" \
+          -H "Content-Type: application/json" \
+          -H "Polaris-Realm: $$REALM" \
+          -d "$$PAYLOAD" >/tmp/create_catalog_response.json
+
+        echo "Creating principal 'quickstart_user'..."
+        PRINCIPAL_RESPONSE=$$(curl --fail-with-body -s -S -X POST http://polaris:8181/api/management/v1/principals \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Polaris-Realm: $$REALM" \
+          -H "Content-Type: application/json" \
+          -d '{"principal": {"name": "quickstart_user", "properties": {}}}')
+        USER_CLIENT_ID=$$(echo "$$PRINCIPAL_RESPONSE" | jq -r '.credentials.clientId')
+        USER_CLIENT_SECRET=$$(echo "$$PRINCIPAL_RESPONSE" | jq -r '.credentials.clientSecret')
+
+        echo "Creating principal role and catalog role..."
+        curl --fail-with-body -s -S -X POST http://polaris:8181/api/management/v1/principal-roles \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Polaris-Realm: $$REALM" \
+          -H "Content-Type: application/json" \
+          -d '{"principalRole": {"name": "quickstart_user_role", "properties": {}}}' >/dev/null
+        curl --fail-with-body -s -S -X POST http://polaris:8181/api/management/v1/catalogs/$$CATALOG_NAME/catalog-roles \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Polaris-Realm: $$REALM" \
+          -H "Content-Type: application/json" \
+          -d '{"catalogRole": {"name": "quickstart_catalog_role", "properties": {}}}' >/dev/null
+
+        echo "Assigning roles and grants..."
+        curl --fail-with-body -s -S -X PUT http://polaris:8181/api/management/v1/principals/quickstart_user/principal-roles \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Polaris-Realm: $$REALM" \
+          -H "Content-Type: application/json" \
+          -d '{"principalRole": {"name": "quickstart_user_role"}}' >/dev/null
+        curl --fail-with-body -s -S -X PUT http://polaris:8181/api/management/v1/principal-roles/quickstart_user_role/catalog-roles/$$CATALOG_NAME \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Polaris-Realm: $$REALM" \
+          -H "Content-Type: application/json" \
+          -d '{"catalogRole": {"name": "quickstart_catalog_role"}}' >/dev/null
+        curl --fail-with-body -s -S -X PUT http://polaris:8181/api/management/v1/catalogs/$$CATALOG_NAME/catalog-roles/quickstart_catalog_role/grants \
+          -H "Authorization: Bearer $$TOKEN" \
+          -H "Polaris-Realm: $$REALM" \
+          -H "Content-Type: application/json" \
+          -d '{"type": "catalog", "privilege": "CATALOG_MANAGE_CONTENT"}' >/dev/null
+
+        cat > /tmp/cjydemo-credentials.env <<EOF
+        POLARIS_REALM=$$REALM
+        POLARIS_CATALOG=$$CATALOG_NAME
+        POLARIS_ROOT_CLIENT_ID=$$CLIENT_ID
+        POLARIS_ROOT_CLIENT_SECRET=$$CLIENT_SECRET
+        POLARIS_USER_CLIENT_ID=$$USER_CLIENT_ID
+        POLARIS_USER_CLIENT_SECRET=$$USER_CLIENT_SECRET
+        EOF
+
+        echo "Polaris setup complete."
+        echo "Catalog: $$CATALOG_NAME"
+        echo "Root: $$CLIENT_ID / $$CLIENT_SECRET"
+        echo "User: $$USER_CLIENT_ID / $$USER_CLIENT_SECRET"
+        touch /tmp/polaris-setup-done
+        tail -f /dev/null
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/polaris-setup-done"]
+      interval: 1s
+      timeout: 10s
+      retries: 240
+
+  spark-sql:
+    image: apache/spark:3.5.8-java17-python3
+    container_name: cjydemo-spark-sql
+    profiles: ["spark"]
+    depends_on:
+      polaris-setup:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    ports:
+      - "4040-4045:4040-4045"
+    command:
+      - /opt/spark/bin/spark-sql
+      - --packages
+      - org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.10.1,org.apache.iceberg:iceberg-aws-bundle:1.10.1
+      - --conf
+      - spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+      - --conf
+      - spark.sql.catalog.polaris=org.apache.iceberg.spark.SparkCatalog
+      - --conf
+      - spark.sql.catalog.polaris.type=rest
+      - --conf
+      - spark.sql.catalog.polaris.warehouse=quickstart_catalog
+      - --conf
+      - spark.sql.catalog.polaris.uri=http://polaris:8181/api/catalog
+      - --conf
+      - spark.sql.catalog.polaris.credential=root:s3cr3t
+      - --conf
+      - spark.sql.catalog.polaris.scope=PRINCIPAL_ROLE:ALL
+      - --conf
+      - spark.sql.catalog.polaris.s3.endpoint=http://rustfs:9000
+      - --conf
+      - spark.sql.catalog.polaris.s3.path-style-access=true
+      - --conf
+      - spark.sql.catalog.polaris.s3.access-key-id=polaris_root
+      - --conf
+      - spark.sql.catalog.polaris.s3.secret-access-key=polaris_pass
+      - --conf
+      - spark.sql.catalog.polaris.client.region=us-west-2
+      - --conf
+      - spark.sql.defaultCatalog=polaris
+      - --conf
+      - spark.sql.catalogImplementation=in-memory
+      - --conf
+      - spark.driver.extraJavaOptions=-Divy.cache.dir=/tmp -Divy.home=/tmp
