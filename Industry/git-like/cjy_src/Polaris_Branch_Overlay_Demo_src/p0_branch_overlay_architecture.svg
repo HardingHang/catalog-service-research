@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="560" viewBox="0 0 1080 560" role="img" aria-label="P0 基础 Branch Overlay 架构">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#2f5f8f"/>
+    </marker>
+    <style>
+      .box { fill: #f8fbff; stroke: #2f5f8f; stroke-width: 2; rx: 10; }
+      .store { fill: #fffaf2; stroke: #9a6b20; stroke-width: 2; rx: 10; }
+      .ctrl { fill: #f7fff7; stroke: #3b7a3b; stroke-width: 2; rx: 10; }
+      .title { font: 700 20px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #172033; }
+      .text { font: 15px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #253044; }
+      .small { font: 13px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #3b4658; }
+      .label { font: 14px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #264c73; font-weight: 700; }
+      .line { stroke: #2f5f8f; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .bi { stroke: #8a641d; stroke-width: 2.2; fill: none; marker-end: url(#arrow); marker-start: url(#arrow); }
+    </style>
+  </defs>
+
+  <text x="40" y="42" class="title">P0 基础 Branch Overlay</text>
+  <text x="40" y="67" class="small">外置控制器 + Iceberg 表级 branch，运行在 Apache Polaris 之上</text>
+
+  <rect x="365" y="95" width="350" height="115" class="box"/>
+  <text x="395" y="127" class="title">Spark / Iceberg 客户端</text>
+  <text x="395" y="155" class="text">创建基准表</text>
+  <text x="395" y="178" class="text">读写 dev_a / dev_b</text>
+  <text x="395" y="201" class="text">执行 controller 生成的 SQL</text>
+
+  <rect x="365" y="270" width="350" height="125" class="box"/>
+  <text x="395" y="302" class="title">Apache Polaris 1.4.1</text>
+  <text x="395" y="330" class="text">Catalog / Namespace / Table</text>
+  <text x="395" y="353" class="text">RBAC 与临时凭证</text>
+  <text x="395" y="376" class="text">表元数据指针</text>
+
+  <rect x="770" y="270" width="250" height="125" class="store"/>
+  <text x="800" y="302" class="title">RustFS / 对象存储</text>
+  <text x="800" y="330" class="text">metadata.json</text>
+  <text x="800" y="353" class="text">manifest 文件</text>
+  <text x="800" y="376" class="text">data 文件</text>
+
+  <rect x="55" y="270" width="270" height="145" class="ctrl"/>
+  <text x="85" y="302" class="title">branch-controller</text>
+  <text x="85" y="330" class="text">逻辑分支清单</text>
+  <text x="85" y="353" class="text">create / diff / drop</text>
+  <text x="85" y="376" class="text">fast-forward 发布预检</text>
+  <text x="85" y="399" class="text">生成 Spark SQL</text>
+
+  <path d="M540 210 L540 270" class="line"/>
+  <text x="562" y="242" class="label">Iceberg REST 与表级 branch 操作</text>
+
+  <path d="M715 332 L770 332" class="bi"/>
+  <text x="730" y="315" class="label">元数据与凭证</text>
+
+  <path d="M325 332 L365 332" class="line"/>
+  <text x="82" y="250" class="label">生成 SQL + 观测状态</text>
+
+  <path d="M190 270 C190 190, 340 165, 365 165" class="line"/>
+  <text x="85" y="180" class="label">读取 state JSON</text>
+  <text x="85" y="202" class="label">输出 Spark SQL</text>
+
+  <rect x="55" y="455" width="965" height="55" fill="#f6f8fb" stroke="#ccd6e0" rx="8"/>
+  <text x="78" y="481" class="small">P0 边界：不修改 Polaris schema，不新增 REST API，不提供 catalog-wide 原子 merge。</text>
+  <text x="78" y="501" class="small">基础 branch 由多张 Iceberg 表级 branch 组合而成。</text>
+</svg>
