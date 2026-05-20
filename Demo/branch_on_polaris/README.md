@@ -9,10 +9,9 @@ Demo/branch_on_polaris/
   controller/   外置 P0 controller，维护 logical branch manifest，生成 SQL
   runtime/      Docker/Spark/RustFS/Polaris 运行环境与一键工作流
   docs/         架构图和 demo 说明资产
-  polaris-src/  Apache Polaris 源码快照，用于查阅和后续 P2 评估
 ```
 
-`polaris-src/` 是内嵌源码 checkout，不参与 P0 runtime 启动；当前 runtime 仍使用 `apache/polaris:1.4.1` 镜像。
+外部源码 checkout 已统一放在仓库根目录 `src_ref/`，例如 `src_ref/polaris`、`src_ref/iceberg`、`src_ref/nessie`。这些目录不参与 P0 runtime 启动，也不纳入本仓库版本管理；当前 runtime 仍使用 `apache/polaris:1.4.1` 镜像。
 
 ## Run P0
 
