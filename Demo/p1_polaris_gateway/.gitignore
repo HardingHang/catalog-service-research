@@ -1,0 +1,4 @@
+gateway-service/.gradle/
+gateway-service/build/
+runtime/.env
+runtime/data/

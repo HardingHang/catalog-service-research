@@ -1,0 +1,577 @@
+openapi: 3.0.3
+info:
+  title: Polaris Git-like REST Gateway P1
+  version: 0.1.0
+  description: Phase 1 interface freeze for the branch-aware Iceberg REST Gateway.
+servers:
+  - url: http://localhost:8080
+paths:
+  /api/v1/catalogs/{catalog}/branches:
+    get:
+      operationId: listBranches
+      parameters:
+        - $ref: '#/components/parameters/catalog'
+      responses:
+        '200':
+          description: Branch list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BranchList'
+    post:
+      operationId: createBranch
+      parameters:
+        - $ref: '#/components/parameters/catalog'
+        - $ref: '#/components/parameters/idempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBranchRequest'
+      responses:
+        '201':
+          description: Branch created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Branch'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/catalogs/{catalog}/branches/{branch}:
+    get:
+      operationId: getBranch
+      parameters:
+        - $ref: '#/components/parameters/catalog'
+        - $ref: '#/components/parameters/branch'
+      responses:
+        '200':
+          description: Branch metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Branch'
+    delete:
+      operationId: deleteBranch
+      parameters:
+        - $ref: '#/components/parameters/catalog'
+        - $ref: '#/components/parameters/branch'
+        - $ref: '#/components/parameters/idempotencyKey'
+      responses:
+        '204':
+          description: Branch marked deleted.
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/catalogs/{catalog}/branches/{branch}/diff:
+    post:
+      operationId: diffBranch
+      parameters:
+        - $ref: '#/components/parameters/catalog'
+        - $ref: '#/components/parameters/branch'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiffRequest'
+      responses:
+        '200':
+          description: Branch diff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiffResponse'
+  /api/v1/catalogs/{catalog}/branches/{branch}/publish-plan:
+    post:
+      operationId: publishPlan
+      parameters:
+        - $ref: '#/components/parameters/catalog'
+        - $ref: '#/components/parameters/branch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishPlanRequest'
+      responses:
+        '200':
+          description: Fast-forward publish plan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishPlanResponse'
+  /api/v1/catalogs/{catalog}/branches/{branch}/publish:
+    post:
+      operationId: publish
+      parameters:
+        - $ref: '#/components/parameters/catalog'
+        - $ref: '#/components/parameters/branch'
+        - $ref: '#/components/parameters/idempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishRequest'
+      responses:
+        '200':
+          description: Publish accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/catalogs/{catalog}/commits/{commit}:
+    get:
+      operationId: getCommit
+      parameters:
+        - $ref: '#/components/parameters/catalog'
+        - $ref: '#/components/parameters/commit'
+      responses:
+        '200':
+          description: Commit metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Commit'
+  /api/v1/catalogs/{catalog}/refs/{ref}/contents:
+    get:
+      operationId: listRefContents
+      parameters:
+        - $ref: '#/components/parameters/catalog'
+        - $ref: '#/components/parameters/ref'
+        - name: pageToken
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Ref content index page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContentList'
+  /api/v1/catalogs/{catalog}/bootstrap:
+    post:
+      operationId: bootstrapMain
+      parameters:
+        - $ref: '#/components/parameters/catalog'
+      responses:
+        '200':
+          description: Bootstrap commit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BootstrapResponse'
+  /api/v1/catalogs/{catalog}/drift-report:
+    get:
+      operationId: driftReport
+      parameters:
+        - $ref: '#/components/parameters/catalog'
+      responses:
+        '200':
+          description: Polaris materialization drift report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriftReport'
+  /api/v1/catalogs/{catalog}/gc/dry-run:
+    post:
+      operationId: gcDryRun
+      parameters:
+        - $ref: '#/components/parameters/catalog'
+      responses:
+        '200':
+          description: Potential cleanup candidates.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GcDryRunResponse'
+  /iceberg/v1/config:
+    get:
+      operationId: getIcebergConfig
+      responses:
+        '200':
+          description: Iceberg REST config response.
+          content:
+            application/json:
+              schema:
+                type: object
+  /iceberg/v1/{prefix}/namespaces:
+    get:
+      operationId: listNamespaces
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/catalogRef'
+      responses:
+        '200':
+          description: Namespace list.
+          content:
+            application/json:
+              schema:
+                type: object
+  /iceberg/v1/{prefix}/namespaces/{namespace}:
+    get:
+      operationId: getNamespace
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/catalogRef'
+      responses:
+        '200':
+          description: Namespace metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+  /iceberg/v1/{prefix}/namespaces/{namespace}/tables:
+    get:
+      operationId: listTables
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/catalogRef'
+      responses:
+        '200':
+          description: Table list from ref index.
+          content:
+            application/json:
+              schema:
+                type: object
+    post:
+      operationId: createTable
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/catalogRef'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Created table load response.
+          content:
+            application/json:
+              schema:
+                type: object
+  /iceberg/v1/{prefix}/namespaces/{namespace}/tables/{table}:
+    get:
+      operationId: loadTable
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/table'
+        - $ref: '#/components/parameters/catalogRef'
+      responses:
+        '200':
+          description: LoadTableResponse for the resolved ref.
+          content:
+            application/json:
+              schema:
+                type: object
+    post:
+      operationId: commitTable
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/table'
+        - $ref: '#/components/parameters/catalogRef'
+        - $ref: '#/components/parameters/idempotencyKey'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Commit table response.
+          content:
+            application/json:
+              schema:
+                type: object
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      operationId: dropTable
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/table'
+        - $ref: '#/components/parameters/catalogRef'
+      responses:
+        '204':
+          description: Tombstone commit accepted.
+  /iceberg/v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials:
+    get:
+      operationId: loadTableCredentials
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/table'
+        - $ref: '#/components/parameters/catalogRef'
+      responses:
+        '200':
+          description: Credentials scoped to resolved ref and content.
+          content:
+            application/json:
+              schema:
+                type: object
+  /iceberg/v1/{prefix}/tables/rename:
+    post:
+      operationId: renameTable
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/catalogRef'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '204':
+          description: Rename commit accepted.
+  /iceberg/v1/{prefix}/transactions/commit:
+    post:
+      operationId: commitTransaction
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/catalogRef'
+        - $ref: '#/components/parameters/idempotencyKey'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Multi-table catalog commit response.
+          content:
+            application/json:
+              schema:
+                type: object
+components:
+  parameters:
+    catalog:
+      name: catalog
+      in: path
+      required: true
+      schema:
+        type: string
+    branch:
+      name: branch
+      in: path
+      required: true
+      schema:
+        type: string
+    commit:
+      name: commit
+      in: path
+      required: true
+      schema:
+        type: string
+    ref:
+      name: ref
+      in: path
+      required: true
+      schema:
+        type: string
+    prefix:
+      name: prefix
+      in: path
+      required: true
+      schema:
+        type: string
+    namespace:
+      name: namespace
+      in: path
+      required: true
+      schema:
+        type: string
+    table:
+      name: table
+      in: path
+      required: true
+      schema:
+        type: string
+    catalogRef:
+      name: X-Catalog-Ref
+      in: header
+      required: false
+      schema:
+        type: string
+        default: main
+    idempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+  responses:
+    Conflict:
+      description: CAS or idempotency conflict.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    CreateBranchRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        sourceRef:
+          type: string
+          default: main
+        message:
+          type: string
+    Branch:
+      type: object
+      required: [catalogId, refName, refType, headCommitId, deleted]
+      properties:
+        catalogId:
+          type: string
+        refName:
+          type: string
+        refType:
+          type: string
+          enum: [BRANCH, TAG]
+        headCommitId:
+          type: string
+        deleted:
+          type: boolean
+    BranchList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Branch'
+    DiffRequest:
+      type: object
+      properties:
+        baseRef:
+          type: string
+          default: main
+    DiffResponse:
+      type: object
+      properties:
+        baseRef:
+          type: string
+        headRef:
+          type: string
+        changes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContentChange'
+    ContentChange:
+      type: object
+      properties:
+        contentKey:
+          type: string
+        changeType:
+          type: string
+          enum: [ADDED, CHANGED, DELETED, RENAMED, CONFLICT]
+        baseValueId:
+          type: string
+        headValueId:
+          type: string
+        snapshotId:
+          type: string
+        schemaId:
+          type: integer
+        metadataLocation:
+          type: string
+    PublishPlanRequest:
+      type: object
+      required: [targetRef]
+      properties:
+        targetRef:
+          type: string
+    PublishPlanResponse:
+      type: object
+      properties:
+        publishable:
+          type: boolean
+        targetRef:
+          type: string
+        sourceHead:
+          type: string
+        targetHead:
+          type: string
+        conflicts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContentChange'
+    PublishRequest:
+      type: object
+      required: [targetRef, expectedTargetHead, expectedSourceHead]
+      properties:
+        targetRef:
+          type: string
+        expectedTargetHead:
+          type: string
+        expectedSourceHead:
+          type: string
+    PublishResponse:
+      type: object
+      properties:
+        targetRef:
+          type: string
+        newHead:
+          type: string
+        outboxEventId:
+          type: string
+    Commit:
+      type: object
+      properties:
+        commitId:
+          type: string
+        parentCommitId:
+          type: string
+        author:
+          type: string
+        message:
+          type: string
+        operationSummary:
+          type: object
+    ContentList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+        nextPageToken:
+          type: string
+    BootstrapResponse:
+      type: object
+      properties:
+        commitId:
+          type: string
+    DriftReport:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+    GcDryRunResponse:
+      type: object
+      properties:
+        unreachableCommits:
+          type: integer
+        unreachableMetadataLocations:
+          type: integer
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        requestId:
+          type: string
