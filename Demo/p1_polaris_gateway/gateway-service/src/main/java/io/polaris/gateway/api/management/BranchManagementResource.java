@@ -1,5 +1,9 @@
 package io.polaris.gateway.api.management;
 
+import io.polaris.gateway.audit.AuditService;
+import io.polaris.gateway.store.RefRepository;
+import io.polaris.gateway.store.StoreConflictException;
+import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.GET;
@@ -10,14 +14,55 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import java.util.Map;
+import java.util.UUID;
 
 @Path("/api/v1/catalogs/{catalog}/branches")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 public class BranchManagementResource {
+
+  @Inject RefRepository refRepository;
+  @Inject AuditService auditService;
+
   @POST
-  public Response createBranch(@PathParam("catalog") String catalog, Map<String, Object> request) {
-    return phaseOnePlaceholder("createBranch", catalog);
+  public Response createBranch(
+      @PathParam("catalog") String catalog, Map<String, Object> request) {
+    if (request == null) {
+      return Response.status(Response.Status.BAD_REQUEST)
+          .entity(Map.of("error", "request body required"))
+          .build();
+    }
+    String name = (String) request.get("name");
+    String sourceRef = request.containsKey("sourceRef") ? (String) request.get("sourceRef") : "main";
+    if (name == null || name.isBlank()) {
+      return Response.status(Response.Status.BAD_REQUEST)
+          .entity(Map.of("error", "name is required"))
+          .build();
+    }
+    var sourceOpt = refRepository.getRef(catalog, sourceRef);
+    if (sourceOpt.isEmpty() || sourceOpt.get().deleted()) {
+      return Response.status(Response.Status.NOT_FOUND)
+          .entity(Map.of("error", "sourceRef not found: " + sourceRef))
+          .build();
+    }
+    String sourceHead = sourceOpt.get().headCommitId();
+    try {
+      RefRepository.RefRecord created = refRepository.createBranch(catalog, name, sourceHead, "gateway");
+      auditService.record(
+          UUID.randomUUID().toString(), catalog, name, "gateway",
+          "CREATE_BRANCH", sourceHead, null, "{}");
+      return Response.status(Response.Status.CREATED)
+          .entity(
+              Map.of(
+                  "name", created.refName(),
+                  "headCommitId", created.headCommitId() != null ? created.headCommitId() : "",
+                  "sourceRef", sourceRef))
+          .build();
+    } catch (StoreConflictException e) {
+      return Response.status(Response.Status.CONFLICT)
+          .entity(Map.of("error", e.getMessage()))
+          .build();
+    }
   }
 
   @GET

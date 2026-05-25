@@ -16,36 +16,33 @@ services:
       timeout: 5s
       retries: 20
 
-  rustfs:
-    image: rustfs/rustfs:1.0.0-alpha.81
-    container_name: p1-gateway-rustfs
+  minio:
+    image: minio/minio:latest
+    container_name: p1-gateway-minio
     ports:
       - "9100:9000"
       - "9101:9001"
     environment:
-      RUSTFS_ACCESS_KEY: polaris_root
-      RUSTFS_SECRET_KEY: polaris_pass
-      RUSTFS_VOLUMES: /data
-      RUSTFS_ADDRESS: ":9000"
-      RUSTFS_CONSOLE_ENABLE: "true"
-      RUSTFS_CONSOLE_ADDRESS: ":9001"
+      MINIO_ROOT_USER: polaris_root
+      MINIO_ROOT_PASSWORD: polaris_pass
+    command: server /data --console-address ":9001"
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail http://127.0.0.1:9000/health && curl --fail http://127.0.0.1:9001/rustfs/console/health"]
-      interval: 10s
-      timeout: 10s
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
       retries: 12
-      start_period: 20s
+      start_period: 10s
 
   bucket-setup:
     image: amazon/aws-cli:2.34.9
     container_name: p1-gateway-bucket-setup
     depends_on:
-      rustfs:
+      minio:
         condition: service_healthy
     environment:
       AWS_ACCESS_KEY_ID: polaris_root
       AWS_SECRET_ACCESS_KEY: polaris_pass
-      AWS_ENDPOINT_URL: http://rustfs:9000
+      AWS_ENDPOINT_URL: http://minio:9000
     entrypoint: /bin/sh
     command:
       - -c
@@ -59,17 +56,23 @@ services:
     ports:
       - "8281:8181"
       - "8282:8182"
+    extra_hosts:
+      - "sts.amazonaws.com:172.19.0.3"
     depends_on:
-      rustfs:
+      minio:
         condition: service_healthy
       bucket-setup:
         condition: service_completed_successfully
     environment:
-      AWS_REGION: us-west-2
+      AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: polaris_root
       AWS_SECRET_ACCESS_KEY: polaris_pass
+      AWS_ENDPOINT_URL_S3: http://minio:9000
+      AWS_ENDPOINT_URL_STS: http://minio:9000
+      QUARKUS_S3_PATH_STYLE_ACCESS: "true"
       POLARIS_BOOTSTRAP_CREDENTIALS: POLARIS,root,s3cr3t
       POLARIS_REALM_CONTEXT_REALMS: POLARIS
+      POLARIS_FEATURES_DEFAULTS_ALLOW_SENDING_CREDENTIALS: "true"
       QUARKUS_OTEL_SDK_DISABLED: "true"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8182/q/health"]
@@ -84,7 +87,6 @@ services:
     working_dir: /workspace
     ports:
       - "8080:8080"
-      - "8081:8081"
     depends_on:
       postgres:
         condition: service_healthy

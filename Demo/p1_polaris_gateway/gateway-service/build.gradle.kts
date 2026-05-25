@@ -28,15 +28,18 @@ dependencies {
   implementation("org.apache.iceberg:iceberg-api")
   implementation("org.apache.iceberg:iceberg-core")
   implementation("org.apache.iceberg:iceberg-aws")
+  implementation("org.apache.iceberg:iceberg-aws-bundle")
   implementation("org.jooq:jooq:3.19.24")
 
   testImplementation("io.quarkus:quarkus-junit5")
+  testImplementation("io.rest-assured:rest-assured")
   testImplementation("org.flywaydb:flyway-core")
   testImplementation("org.flywaydb:flyway-database-postgresql")
   testImplementation("org.postgresql:postgresql")
   testImplementation(enforcedPlatform("org.testcontainers:testcontainers-bom:1.20.6"))
   testImplementation("org.testcontainers:junit-jupiter")
   testImplementation("org.testcontainers:postgresql")
+  testImplementation("io.quarkus:quarkus-junit5-mockito")
 }
 
 tasks.withType<Test> {

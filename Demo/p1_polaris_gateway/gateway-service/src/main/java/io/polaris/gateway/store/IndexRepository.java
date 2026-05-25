@@ -9,6 +9,7 @@ import jakarta.inject.Inject;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Optional;
 import javax.sql.DataSource;
 import org.jooq.DSLContext;
@@ -121,6 +122,44 @@ public class IndexRepository {
                 .where(field("index_id").eq(indexId))
                 .and(field("content_key").eq(contentKey))
                 .fetchOptional(
+                    record ->
+                        new ContentIndexRecord(
+                            record.value1(),
+                            record.value2(),
+                            record.value3(),
+                            record.value4(),
+                            record.value5(),
+                            record.value6(),
+                            Boolean.TRUE.equals(record.value7()))));
+  }
+
+  public List<String> listNamespaces(String indexId) {
+    return withDsl(
+        ctx ->
+            ctx.selectDistinct(field("namespace", String.class))
+                .from(table("catalog_content_index"))
+                .where(field("index_id").eq(indexId))
+                .and(field("deleted").eq(false))
+                .orderBy(field("namespace").asc())
+                .fetch(record -> record.value1()));
+  }
+
+  public List<ContentIndexRecord> listByNamespace(String indexId, String namespace) {
+    return withDsl(
+        ctx ->
+            ctx.select(
+                    field("index_id", String.class),
+                    field("namespace", String.class),
+                    field("content_key", String.class),
+                    field("content_id", String.class),
+                    field("value_id", String.class),
+                    field("content_type", String.class),
+                    field("deleted", Boolean.class))
+                .from(table("catalog_content_index"))
+                .where(field("index_id").eq(indexId))
+                .and(field("namespace").eq(namespace))
+                .and(field("deleted").eq(false))
+                .fetch(
                     record ->
                         new ContentIndexRecord(
                             record.value1(),
