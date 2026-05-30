@@ -358,15 +358,202 @@ Arrow 路径:
 
 ```
 改造前:
-  PG Planner → SQL 模板 → 文本替换 read_parquet(...) → libpq 发送
-    → pgduck_server → DuckDB 解析 SQL → DuckDB 读 metadata/Parquet
-      → DataChunk → to_text 逐行转文本 → wire protocol → libpq 接收
-        → PQgetvalue → InputFunctionCall → Datum → Tuple
+  PG Planner ────────────────────────── pg_lake_table / deparse
+    → SQL 模板                           pg_lake_table / deparse
+    → 文本替换 read_parquet(...)         pg_lake_table / transform_query_to_duckdb
+    → libpq 发送                        pg_lake_engine / client
+    → pgduck_server                     独立进程
+    → DuckDB 解析 SQL                    DuckDB
+    → DuckDB 读 metadata/Parquet         DuckDB
+    → DataChunk                          DuckDB (内部列式)
+    → to_text 逐行转文本                 pgduck_server / type_conversion
+    → wire protocol                      PG wire protocol
+    → libpq 接收                         pg_lake_engine / client
+    → PQgetvalue → InputFunctionCall    pg_lake_table / fdw
+    → Datum → Tuple                      pg_lake_table / fdw
 
 改造后:
-  PG Planner → 列映射 (fdw_private)
-    → Iceberg SDK 读 metadata → manifest pruning → 读 Parquet
-      → RecordBatch → ExportRecordBatch → ArrowArray → 按列读 buffer → Datum → Tuple
+  PG Planner ────────────────────────── pg_lake_table (保留)
+    → 列映射 (fdw_private)               pg_lake_table (保留)
+    → 查 tables_internal 拿 metadata_path pg_lake_iceberg / catalog (保留)
+    → 读 metadata.json                  Iceberg C++ SDK
+    → manifest pruning                   Iceberg C++ SDK
+    → 读 Parquet 文件                    Iceberg C++ SDK (Arrow C++)
+    → arrow::RecordBatch                 Arrow C++ 库
+    → ExportRecordBatch → ArrowArray     Arrow C++ 库 (C Data Interface)
+    → 按列读 buffer → Datum              pg_lake_table / arrow (新增)
+    → heap_form_tuple → Tuple            pg_lake_table / fdw (保留)
+```
+
+```cpp
+// pg_lake_table/src/fdw/pg_lake_table.c
+// 打开 Iceberg 表，配置列裁剪和谓词下推，准备好 reader 等待迭代
+static void
+postgresBeginForeignScan(ForeignScanState *node, int eflags) {
+    PgLakeScanState *fsstate = (PgLakeScanState *)node->fdw_state;
+    Relation rel = node->ss.ss_currentRelation;
+    TupleDesc tupdesc = RelationGetDescr(rel);
+    Oid relid = RelationGetRelid(rel);
+
+    /*
+     * metadata_path 获取
+     *   来源: pg_lake_iceberg (保留)
+     *   查询 lake_iceberg.tables_internal 拿到 metadata.json 的路径
+     */
+    char *metadata_path = GetIcebergMetadataLocation(relid, false);
+
+    /*
+     * IcebergFileIOCreate
+     *   来源: Iceberg C++ SDK
+     *   初始化对象存储访问 (S3 endpoint + 认证凭据)
+     */
+    IcebergFileIO *file_io = IcebergFileIOCreate(
+        s3_endpoint, s3_access_key, s3_secret_key);
+
+    /*
+     * IcebergTableLoad
+     *   来源: Iceberg C++ SDK
+     *   输入: metadata.json 路径 + FileIO
+     *   输出: IcebergTable 句柄 (内部完成 metadata 解析、snapshot 定位)
+     */
+    IcebergTable *table = IcebergTableLoad(metadata_path, file_io,
+                                           ICEBERG_TABLE_LOAD_NO_VALIDATION);
+
+    /*
+     * NewScan + Select + Filter
+     *   来源: Iceberg C++ SDK
+     *   列裁剪: attnames 来自 plan 阶段收集的所需列名
+     *   谓词下推: where_clause 来自 plan 阶段的 filter 表达式
+     *   返回值是配置好的 IcebergScan，绑定了 snapshot
+     */
+    IcebergScan *scan = IcebergTableNewScan(table);
+    IcebergScanUseSnapshotId(scan, IcebergTableCurrentSnapshotId(table));
+    IcebergScanSelect(scan, attname_count, attnames);
+    IcebergScanFilter(scan, where_clause);
+
+    /*
+     * build_column_map
+     *   来源: pg_lake_table
+     *   输入: PG TupleDesc + Iceberg schema
+     *   输出: attnum → Arrow column index 映射数组
+     *   PG 列 "name" 对应 Iceberg field id=2，在 Arrow schema 中位置为 0
+     */
+    IcebergSchema iceberg_schema = IcebergTableCurrentSchema(table);
+    fsstate->arrowColMap = build_column_map(tupdesc, iceberg_schema);
+
+    /*
+     * IcebergScanToArrowReader
+     *   来源: Iceberg C++ SDK / Arrow C++ 库
+     *   输入: 配置好的 IcebergScan
+     *   输出: arrow::RecordBatchReader*, 存为 opaque pointer
+     *   后续 IterateForeignScan 通过它逐批读取
+     */
+    fsstate->icebergReader = IcebergScanToArrowReader(scan);
+
+    /* MemoryContext 初始化 */
+    fsstate->batch_cxt = AllocSetContextCreate(CurrentMemoryContext,
+        "pg_lake batch context", ALLOCSET_DEFAULT_SIZES);
+    fsstate->temp_cxt = AllocSetContextCreate(CurrentMemoryContext,
+        "pg_lake temp context", ALLOCSET_DEFAULT_SIZES);
+    fsstate->prepared_statement_sent = false;
+    fsstate->eof_reached = false;
+}
+```
+
+
+```cpp
+// pg_lake_table/src/fdw/pg_lake_table.c
+// 从 Iceberg SDK 逐批拉取 Arrow 列式数据，按列转 Datum 组装 HeapTuple，逐行返回给上层 executor。
+static TupleTableSlot *
+postgresIterateForeignScan(ForeignScanState *node) {
+    /* fdw_state 在 BeginForeignScan 时初始化，持有 reader、缓存、列映射 */
+    PgLakeScanState *fsstate = (PgLakeScanState *)node->fdw_state;
+    /* 返回给上层 executor 的列容器 */
+    TupleTableSlot  *slot    = node->ss.ss_ScanTupleSlot;
+    /* 表的列定义，natts=列数，用于遍历和 heap_form_tuple */
+    TupleDesc        tupdesc = node->ss.ss_currentRelation->rd_att;
+
+    /* 缓存耗尽 (所有 tuple 已取完) 且未 EOF 时，拉取下一批 */
+    if (fsstate->next_tuple >= fsstate->num_tuples && !fsstate->eof_reached) {
+        MemoryContext oldctx = MemoryContextSwitchTo(fsstate->batch_cxt);
+        fsstate->tuples     = NULL;
+        fsstate->num_tuples = 0;
+        fsstate->next_tuple = 0;
+
+        /*
+         * ReadNext + ExportRecordBatch
+         *   来源: Iceberg C++ SDK / Arrow C++ 库
+         *   输入: icebergReader (BeginForeignScan 时创建)
+         *   输出: ArrowArray + ArrowSchema (纯 C 结构体, 列式 buffer 指针)
+         *   列裁剪 & 谓词下推已在 BeginForeignScan 阶段配置到 reader 中
+         */
+        ArrowArray  c_array;
+        ArrowSchema c_schema;
+        {
+            auto *reader = static_cast<arrow::RecordBatchReader *>(
+                fsstate->icebergReader);
+            std::shared_ptr<arrow::RecordBatch> batch;
+            arrow::Status status = reader->ReadNext(&batch);
+            if (!status.ok() || batch == nullptr) {
+                fsstate->eof_reached = true;
+                MemoryContextSwitchTo(oldctx);
+                goto check_available;
+            }
+            arrow::ExportRecordBatch(*batch, &c_array, &c_schema);
+        }
+
+        /*
+         * arrow_column_to_datum
+         *   来源: pg_lake_table
+         *   输入: ArrowArray 单列 buffer + ArrowSchema format 字符串
+         *   输出: PG Datum + isnull
+         *   定长类型直接读 buffer 赋值, 变长类型 palloc + memcpy
+         */
+        int64_t    nrows  = c_array.length;
+        HeapTuple *tuples = palloc0(nrows * sizeof(HeapTuple));
+        for (int64_t row = 0; row < nrows; row++) {
+            Datum  values[MaxTupleAttributeNumber];
+            bool   isnull[MaxTupleAttributeNumber];
+            for (int attno = 0; attno < tupdesc->natts; attno++) {
+                int arrow_col = fsstate->arrowColMap[attno];
+                arrow_column_to_datum(&c_array.children[arrow_col],
+                                      &c_schema.children[arrow_col],
+                                      row, &values[attno], &isnull[attno]);
+            }
+            /*
+             * heap_form_tuple
+             *   来源: PG 内核
+             *   输入: Datum 数组 + tupdesc
+             *   输出: HeapTuple (行式)
+             */
+            tuples[row] = heap_form_tuple(tupdesc, values, isnull);
+        }
+
+        /*
+         * release 回调
+         *   来源: Arrow C Data Interface 规范
+         *   由 ExportRecordBatch 设置, 释放 Arrow C++ 侧的内存
+         */
+        c_array.release(&c_array);
+        c_schema.release(&c_schema);
+
+        fsstate->tuples     = tuples;
+        fsstate->num_tuples = nrows;
+        MemoryContextSwitchTo(oldctx);
+    }
+
+check_available:
+    if (fsstate->next_tuple >= fsstate->num_tuples)
+        return ExecClearTuple(slot);
+
+    /*
+     * ExecStoreHeapTuple
+     *   来源: PG 内核
+     *   将 HeapTuple 装入 TupleTableSlot, 返回给上层 executor
+     */
+    ExecStoreHeapTuple(fsstate->tuples[fsstate->next_tuple++], slot, false);
+    return slot;
+}
 ```
 
 ### 3.2 各阶段变化详情
