@@ -18,6 +18,7 @@ OBJS = src/iceberg_fdw.o \
        src/plan/fdw_private.o \
        src/exec/scan_callbacks.o \
        src/exec/vec_scan_callbacks.o \
+       src/catalog/catalog_resolve.o \
        src/ddl/validate_table_def.o
 
 DATA = iceberg_fdw.control iceberg_fdw--1.0.sql

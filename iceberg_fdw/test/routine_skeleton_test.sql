@@ -17,6 +17,14 @@ CREATE SERVER s FOREIGN DATA WRAPPER iceberg_fdw OPTIONS (catalog_kind 'pg_nativ
 CREATE FOREIGN TABLE ft(a int, b text) SERVER s
     OPTIONS (namespace 'sales', table_name 'orders');
 
+-- 自 Phase 2 起 GetForeignPlan 必经 Catalog 解析，故需先装配控制面状态底座
+-- 并写入表身份；执行阶段仍返回 mock tuple（Iterate 桩），故计数/列形状不变。
+\i /tmp/iceberg_fdw/sql/iceberg_catalog_base.sql
+INSERT INTO iceberg_catalog.namespaces(namespace) VALUES ('sales');
+INSERT INTO iceberg_catalog.tables(namespace, table_name, table_uuid, metadata_location, current_schema_id)
+  VALUES ('sales', 'orders', '11111111-1111-1111-1111-111111111111'::uuid,
+          's3://bucket/sales/orders/metadata/v3.metadata.json', 0);
+
 \echo === 1. 行式 count（期望 = 3）===
 SELECT count(*) FROM ft;
 

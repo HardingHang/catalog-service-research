@@ -47,6 +47,18 @@ openGauss contrib 扩展原生走**源码树内构建**（`Makefile` 内
    `Makefile.pgxs` 在 `include $(PGXS)` 后 `override CPPFLAGS += -fPIC` 使其最后生效。
 3. **`PG_MODULE_MAGIC`**：`iceberg_fdw.cpp` 必须有 `PG_MODULE_MAGIC;`，否则
    `CREATE EXTENSION` 报 "missing magic block"。
+4. **重装 .so 必须重启 gaussdb**：openGauss 是单多线程进程，`dlopen` 的扩展在
+   进程内缓存；`make install` 覆盖 `.so` 后旧库仍在内存，新会话不会加载新代码。
+   迭代开发每次重装后须 `docker restart`（或 `gs_ctl restart`）。这是与 PG 每
+   后端进程模型最大的不同，极易误判"改了没生效"。
+5. **`SPI_execute_with_args` 签名**：openGauss 比社区 PG 多 `Cursor_Data*`
+   （无默认值），调用须传 `NULL`。
+6. **内部头勿用内核同名**：`-I./src` 在前，`src/catalog/catalog.h` 会遮蔽内核
+   `catalog/catalog.h`；本项目改名 `iceberg_catalog.h`。
+
+> **Catalog 基座**：`iceberg_catalog.*` 系统表是控制面状态底座（doc 3 §4/§7），
+> 不由 FDW extension 创建；`sql/iceberg_catalog_base.sql` 供控制面/验证装配。
+> 自 Phase 2 起 `GetForeignPlan` 必经 Catalog 解析，故测试需先装配基座并写入表身份。
 
 > **openGauss 5.0.0 平台限制**：不支持 `DROP EXTENSION`（报 "EXTENSION is not
 > yet supported"）。故验收脚本在全新数据库 `icetest` 内执行并整库 DROP，

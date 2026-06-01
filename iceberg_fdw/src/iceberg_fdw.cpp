@@ -24,6 +24,8 @@
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/pg_list.h"
+#include "nodes/value.h"
 #include "utils/rel.h"
 
 #include "iceberg_fdw.h"
@@ -101,9 +103,16 @@ Datum iceberg_fdw_validator(PG_FUNCTION_ARGS)
     List* options_list = untransformRelOptions(PG_GETARG_DATUM(0));
     Oid catalog = PG_GETARG_OID(1);
     ListCell* cell = NULL;
+    bool has_namespace = false;
+    bool has_table_name = false;
 
     foreach (cell, options_list) {
         DefElem* def = (DefElem*)lfirst(cell);
+
+        if (strcmp(def->defname, "namespace") == 0)
+            has_namespace = true;
+        else if (strcmp(def->defname, "table_name") == 0)
+            has_table_name = true;
 
         if (!is_valid_option(def->defname, catalog)) {
             const struct IcebergFdwOption* opt = NULL;
@@ -123,6 +132,12 @@ Datum iceberg_fdw_validator(PG_FUNCTION_ARGS)
                                 : errhint("There are no valid options in this context.")));
         }
     }
+
+    /* 外表必需 namespace + table_name（doc 3 §5.1），缺则在 DDL 期即报错 */
+    if (catalog == ForeignTableRelationId && (!has_namespace || !has_table_name))
+        ereport(ERROR,
+            (errcode(ERRCODE_FDW_DYNAMIC_PARAMETER_VALUE_NEEDED),
+                errmsg("iceberg_fdw foreign table requires options \"namespace\" and \"table_name\"")));
 
     PG_RETURN_VOID();
 }
@@ -144,10 +159,15 @@ static bool is_valid_option(const char* option, Oid context)
 
 /*
  * icebergExplainForeignScan
- *      EXPLAIN 附加输出（doc 3 §2.1 建议项）。本版仅标注扫描来源，
- *      解析到的文件来源在 Phase 2 接 Catalog 后补充。
+ *      EXPLAIN 附加输出（doc 3 §2.1）。从 fdw_private 解码并展示规划期
+ *      解析到的 metadata_location（Phase 2 验收：计划中可见解析来源）。
  */
 void icebergExplainForeignScan(ForeignScanState* node, struct ExplainState* es)
 {
-    ExplainPropertyText("Iceberg", "mock scan (upper-layer skeleton)", es);
+    ForeignScan* plan = (ForeignScan*)node->ss.ps.plan;
+    List* fdw_private = plan->fdw_private;
+    List* tasks = (List*)list_nth(fdw_private, IcebergPrivFileScanTasks);
+    const char* meta = (tasks != NIL) ? strVal(linitial(tasks)) : "(none)";
+
+    ExplainPropertyText("Iceberg metadata", meta, es);
 }

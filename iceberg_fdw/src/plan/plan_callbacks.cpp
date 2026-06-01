@@ -23,6 +23,7 @@
 #include "optimizer/restrictinfo.h"
 
 #include "iceberg_fdw.h"
+#include "catalog/iceberg_catalog.h"
 
 /*
  * icebergGetForeignRelSize
@@ -70,15 +71,23 @@ ForeignScan* icebergGetForeignPlan(PlannerInfo* root, RelOptInfo* baserel, Oid f
     List* retrievedAttrs = NIL;
     List* fdw_private = NIL;
     AttrNumber attno;
+    char* ns = NULL;
+    char* tbl = NULL;
+    IcebergCatalog cat;
+    IcebergResolved* resolved = NULL;
 
     /* 无原生谓词求值能力：剥掉 RestrictInfo，全部交执行器重查（同 file_fdw） */
     scan_clauses = extract_actual_clauses(scan_clauses, false);
 
     /*
-     * 骨架阶段：写死 1 个 mock FileScanTask（用文件路径字符串占位）。
-     * Phase 2 替换为 IcebergCatalogResolveTable(...) → PlanFiles() 的结果。
+     * Phase 2：从 OPTIONS 取 namespace.table，经 Catalog 解析得 metadata_location。
+     * 表不存在时 IcebergCatalogResolveTable 在此（规划期）报明确错误。
+     * 当前 fileScanTasks 只承载解析到的 metadata 源；真实数据文件列表
+     * （PlanFiles 解析 metadata.json）属下半层，下一版接入。
      */
-    fileScanTasks = lappend(fileScanTasks, makeString(pstrdup("mock://iceberg/data/00000.parquet")));
+    IcebergGetTableIdentity(foreigntableid, &ns, &tbl, &cat);
+    resolved = IcebergCatalogResolveTable(&cat, ns, tbl);
+    fileScanTasks = lappend(fileScanTasks, makeString(resolved->metadataLocation));
 
     /* 投影列：本版取全列（属性号 1..max_attr）。Phase 2 接真实投影裁剪 */
     for (attno = 1; attno <= baserel->max_attr; attno++)

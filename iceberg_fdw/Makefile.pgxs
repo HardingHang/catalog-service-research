@@ -19,6 +19,7 @@ OBJS = src/iceberg_fdw.o \
        src/plan/fdw_private.o \
        src/exec/scan_callbacks.o \
        src/exec/vec_scan_callbacks.o \
+       src/catalog/catalog_resolve.o \
        src/ddl/validate_table_def.o
 
 # 内部头文件查找路径（src/iceberg_fdw.h、src/exec/scan_state.h）

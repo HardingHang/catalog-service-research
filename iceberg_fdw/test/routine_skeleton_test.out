@@ -24,10 +24,10 @@ CREATE FOREIGN TABLE
 (3 rows)
 
 === 2. EXPLAIN（期望含 Foreign Scan 节点）===
-                 QUERY PLAN
----------------------------------------------
+                               QUERY PLAN
+------------------------------------------------------------------------
  Foreign Scan on ft
-   Iceberg: mock scan (upper-layer skeleton)
+   Iceberg metadata: s3://bucket/sales/orders/metadata/v3.metadata.json
 (2 rows)
 
 === 3. ReScan：相关子查询（期望 3 行，每行 3）===

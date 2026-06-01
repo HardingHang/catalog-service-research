@@ -10,27 +10,30 @@
 
 ### 0.1 总体状态
 
-本 memo 记录 main 分支截至 **Phase 1** 的状态。已完成：
+本 memo 记录 main 分支截至 **Phase 2** 的状态。已完成：
 
 1. extension 骨架：`iceberg_fdw.control` / `--1.0.sql` / `CREATE FDW`。
 2. `FdwRoutine` 注册：6 个扫描回调 + `VecIterateForeignScan` + `ExplainForeignScan` + `ValidateTableDef`。
-3. 规划三回调：`GetForeignRelSize/Paths/Plan`，`GetForeignPlan` 写死 mock FileScanTask 并编码 `fdw_private`。
-4. 行式扫描生命周期：`Begin/Iterate/ReScan/End` + 批缓存 mock tuple。
+3. 规划三回调：`GetForeignRelSize/Paths/Plan`。**Phase 2 起** `GetForeignPlan` 经 Catalog 解析得 `metadata_location` 并编码 `fdw_private`（不再写死 mock FileScanTask）。
+4. 行式扫描生命周期：`Begin/Iterate/ReScan/End` + 批缓存 mock tuple（执行阶段仍 mock）。
 5. 向量化入口：`VecIterateForeignScan` 造 mock VectorBatch（已注册编译，命中条件见 0.3）。
-6. validator OPTIONS 校验、`ValidateTableDef` 占位。
+6. validator OPTIONS 校验（合法 key + 外表必需 namespace/table_name）、`ValidateTableDef` 占位。
+7. **Phase 2** Catalog 只读解析：`IcebergCatalogResolveTable`（pg_native，SPI 查 `iceberg_catalog.tables`）；`EXPLAIN` 展示解析到的 `metadata_location`；不存在表规划期明确报错。
 
-main 此状态**不含** Phase 2（Catalog 解析接入）、Phase 3（向量形状对齐 + ReScan 完善 + ValidateTableDef 实化）、下半层 Arrow 转换、控制面 SQL。
+main 此状态**不含** Phase 3（向量形状对齐 + ReScan 完善 + ValidateTableDef 实化）、下半层 Arrow 转换、控制面 SQL 写侧、REST 后端。
 
-Phase 1 验收：在 **openGauss 5.0.0** 实跑 `test/routine_skeleton_test.sql` 全部通过（输出见 `test/routine_skeleton_test.out`）。
+验收：在 **openGauss 5.0.0** 实跑 `test/routine_skeleton_test.sql`（Phase 1）与 `test/catalog_resolve_test.sql`（Phase 2）全部通过（输出见同名 `.out`）。
 
 | 验收项 | 结果 |
 |---|---|
 | 行式 `count(*)`（N=`ICEBERG_MOCK_ROWS`=3） | 3 ✓ |
 | 列取值 a/b | `1,2,3` / `mock` ✓ |
-| `EXPLAIN` 含 `Foreign Scan on ft` | ✓ |
+| `EXPLAIN` 含 `Foreign Scan` + 解析到的 `metadata_location` | ✓ |
 | ReScan（相关子查询） | 稳定 3/3/3 ✓ |
-| 非法 OPTION | `ERROR: invalid option "nope"` + hint ✓ |
+| 非法 OPTION / 缺必需 OPTION | 均明确报错 ✓ |
 | 向量执行器（`try_vector_engine_strategy='force'`） | 返回 3 ✓ |
+| 规划期解析 `s3://.../v3.metadata.json` | EXPLAIN VERBOSE 可见 ✓ |
+| 不存在的 ns/table | 规划期 `not found in catalog`，不崩溃 ✓ |
 
 ### 0.2 本地运行约定
 
@@ -40,7 +43,7 @@ Phase 1 验收：在 **openGauss 5.0.0** 实跑 `test/routine_skeleton_test.sql`
 bash iceberg_fdw/test/docker/run_acceptance.sh
 ```
 
-脚本流程：构建带 g++ 的镜像 `iceberg-fdw-build:5.0.0`（基于 `opengauss/opengauss:5.0.0`）→ 启动 gaussdb 容器 `igtest` → 用同版本 v5.0.0 源码补齐缺失内部头 → `make -f Makefile.pgxs install` → 跑验收 SQL。
+脚本流程：构建带 g++ 的镜像 `iceberg-fdw-build:5.0.0`（基于 `opengauss/opengauss:5.0.0`）→ 启动 gaussdb 容器 `igtest` → 用同版本 v5.0.0 源码补齐缺失内部头 → `make -f Makefile.pgxs install` → **重启 gaussdb 加载新 .so**（见 0.3 第 6 点）→ 跑 Phase 1/2 验收 SQL。
 
 design canonical 构建是**源码树内**（`Makefile`，拷为 `contrib/iceberg_fdw/` 后 `make install`）；落地真目标 GaussVector 时按 doc 3 §2.4 复核内核头。openGauss 源码克隆在 `src_ref/opengauss-server`（gitignore 下，sparse）。
 
@@ -48,9 +51,11 @@ design canonical 构建是**源码树内**（`Makefile`，拷为 `contrib/iceber
 
 1. **验证目标是社区 openGauss 5.0.0，非 GaussVector**：关键 API（`make_foreignscan`/`create_foreignscan_path`/`VecIterateForeignScan`/`ExecStoreTuple`/`VectorBatch`）已核对 master 与 v5.0.0 一致；落地 GaussVector 仍需按 §2.4 复核内核头（字段集、向量批布局、签名）。
 2. **向量路径未真正命中 `VecIterateForeignScan`**：当前 plan 为 `Row Adapter → Vector Aggregate → Vector Adapter → Foreign Scan`，执行器跑**行式** `IterateForeignScan` 再 row→vector 适配。命中专用向量入口需生成 `VecForeignScan` 节点（列存/ORC 式外表，取决于向量执行器对 FDW 类型判定）——留 Phase 3 在真实内核对齐。
-3. **openGauss 5.0.0 不支持 `DROP EXTENSION`**（报 "EXTENSION is not yet supported"）：验收脚本改在全新库 `icetest` 内执行后整库 DROP，不依赖 `DROP EXTENSION`。
-4. **执行阶段全为 mock**：`GetForeignPlan` 写死 FileScanTask，`Iterate/VecIterate` 返回常量桩数据，不接 Catalog、不读 Arrow。Phase 2 接 Catalog，下半层换 Arrow。
+3. **openGauss 5.0.0 不支持 `DROP EXTENSION`**（报 "EXTENSION is not yet supported"）：验收脚本改在全新库 `icetest`/`icetest2` 内执行后整库 DROP，不依赖 `DROP EXTENSION`。
+4. **执行阶段仍 mock**：`Iterate/VecIterate` 返回常量桩数据，不读 Arrow（规划期已接 Catalog 取 metadata_location，但未解析 metadata.json 取真实数据文件）。下半层换 Arrow。
 5. **谓词不下推**：`GetForeignRelSize` 行数固定估算，谓词全归 local 由执行器重查。
+6. **重装 .so 必须重启 gaussdb**：openGauss 是单多线程进程，`dlopen` 的扩展在进程内缓存，重装 `.so` 文件后旧会话/新会话仍用已加载的旧库；必须 `docker restart`（或 `gs_ctl restart`）才生效。迭代开发的关键坑。
+7. **Catalog 基座由控制面提供**：`iceberg_catalog.*` 系统表非 FDW extension 创建（数据面只读）；`sql/iceberg_catalog_base.sql` 供控制面/验证按需装配。REST 后端未实现（报错占位）。
 
 ---
 
@@ -104,14 +109,40 @@ bash iceberg_fdw/test/docker/run_acceptance.sh
 
 ---
 
-## 2. 后续任务
+## 2. Phase 2：Catalog 解析接入 + OPTIONS 校验
 
-### Phase 2：Catalog 解析接入 + OPTIONS 校验
+### 2.1 目标
 
-- `src/catalog/catalog.h` + `catalog_resolve.cpp`：`IcebergCatalogResolveTable`（pg_native：SPI 查 `iceberg_catalog.tables`）。
-- `GetForeignPlan` 用解析结果替换写死的 FileScanTask；OPTIONS 取 `namespace.table` → `metadata_location`。
-- 验收：手工 `INSERT` 一行表身份后，`EXPLAIN (VERBOSE)` 可见解析来源；不存在表报明确 NoSuchTable；非法 OPTION 报错。
-- 依赖：`iceberg_catalog.tables`/`table_schemas` 系统表（GaussVector 设计 §6.2）。
+`GetForeignPlan` 从外表 OPTIONS 取 `namespace.table`，经 Catalog 抽象解析出 `metadata_location`（pg_native：SPI 查 `iceberg_catalog.tables`），编码进 `fdw_private`；不存在表在规划期明确报错；validator 补外表必需 OPTION 校验。
+
+### 2.2 产出
+
+新增：
+- `src/catalog/iceberg_catalog.h`：`IcebergCatalog` / `IcebergResolved` + 解析与身份提取声明（**注意**不能叫 `catalog/catalog.h`，会遮蔽内核同名头）。
+- `src/catalog/catalog_resolve.cpp`：`IcebergGetTableIdentity`（OPTIONS 提取）+ `IcebergCatalogResolveTable`（SPI 查询，结果跨 `SPI_finish` 拷回调用方上下文）。
+- `sql/iceberg_catalog_base.sql`：控制面状态底座 DDL（namespaces/tables/table_schemas，对齐 GaussVector §6）。
+- `test/catalog_resolve_test.sql` / `.out`。
+
+更新：
+- `plan/plan_callbacks.cpp`：`GetForeignPlan` 调 `IcebergCatalogResolveTable`，`fileScanTasks` 承载解析到的 `metadata_location`。
+- `iceberg_fdw.cpp`：`ExplainForeignScan` 解码 fdw_private 展示 `metadata_location`；validator 补外表必需 `namespace`/`table_name` 校验。
+- `Makefile`/`Makefile.pgxs`/`CMakeLists.txt`：纳入 `catalog/catalog_resolve`。
+
+### 2.3 验收
+
+```bash
+gsql -d postgres -p 5432 -f test/catalog_resolve_test.sql
+```
+
+结果见 0.1 表，实跑输出 `test/catalog_resolve_test.out`。全部通过：EXPLAIN VERBOSE 见解析到的 `metadata_location`；非法/缺失 OPTION 报错；不存在表规划期报 `not found in catalog`。
+
+### 2.4 修复记录
+
+1. **头文件命名遮蔽**：内部头若命名 `src/catalog/catalog.h`，因 `-I./src` 在前会遮蔽 openGauss 内核 `catalog/catalog.h`，破坏所有引用它的内核头。改名 `iceberg_catalog.h`。
+2. **`SPI_execute_with_args` 签名差异**：openGauss 比社区 PG 多 `Cursor_Data* cursor_data`（无默认值），须传 `NULL`（`parser` 用默认 `GetRawParser()`）。
+3. **重装 .so 不生效**：见 0.3 第 6 点（单进程缓存 dlopen），重启 gaussdb 后 Phase 2 行为才出现。
+
+## 3. 后续任务
 
 ### Phase 3：向量化路径对齐 + ReScan + ValidateTableDef 实化
 

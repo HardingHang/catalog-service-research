@@ -1,0 +1,31 @@
+-- iceberg_fdw Phase 2 验收实跑输出（openGauss 5.0.0，2026-06-01）
+-- 命令：gsql -d postgres -p 5432 -f test/catalog_resolve_test.sql
+-- 测试 2/3/4 的 ERROR 均为预期内的校验/解析报错，非失败。
+-- （已折叠 CREATE SCHEMA/TABLE 的 NOTICE 与隐式索引提示）
+
+DROP DATABASE
+CREATE DATABASE
+You are now connected to database "icetest2" as user "opengauss".
+CREATE EXTENSION
+CREATE SERVER
+CREATE FOREIGN TABLE
+INSERT 0 1
+INSERT 0 1
+=== 1. 规划期解析到 metadata_location（EXPLAIN VERBOSE 可见）===
+                               QUERY PLAN
+------------------------------------------------------------------------
+ Foreign Scan on public.ft
+   Output: a, b
+   Iceberg metadata: s3://bucket/sales/orders/metadata/v3.metadata.json
+(3 rows)
+
+=== 2. 非法 OPTION（期望报 invalid option "nope"）===
+ERROR:  invalid option "nope"
+HINT:  Valid options in this context are: namespace, table_name
+=== 3. 缺必需 OPTION（期望报 requires options namespace and table_name）===
+ERROR:  iceberg_fdw foreign table requires options "namespace" and "table_name"
+=== 4. 指向不存在的表（期望规划期报 not found in catalog，而非崩溃）===
+CREATE FOREIGN TABLE
+ERROR:  iceberg_fdw: table "sales.no_such_table" not found in catalog
+You are now connected to database "postgres" as user "opengauss".
+DROP DATABASE

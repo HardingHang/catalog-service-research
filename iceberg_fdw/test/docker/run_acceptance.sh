@@ -37,5 +37,12 @@ docker exec -u opengauss "$CT" bash -c "$ENV; cd /tmp/iceberg_fdw && \
     make -f Makefile.pgxs USE_PGXS=1 PG_CONFIG=$GH/bin/pg_config clean; \
     make -f Makefile.pgxs USE_PGXS=1 PG_CONFIG=$GH/bin/pg_config install"
 
-echo "== 5) 跑 Phase 1 验收 =="
+echo "== 5) 重启 gaussdb 以加载新 .so =="
+# openGauss 是单多线程进程：dlopen 的扩展在进程内缓存，重装 .so 后必须重启
+# 才会被新会话加载（与 PG 每后端进程模型不同）。
+docker restart "$CT" >/dev/null
+until docker logs "$CT" 2>&1 | tail -20 | grep -q "database system is ready to accept connections"; do sleep 3; done
+
+echo "== 6) 跑 Phase 1 / Phase 2 验收 =="
 docker exec -u opengauss "$CT" bash -c "$ENV; gsql -d postgres -p 5432 -f /tmp/iceberg_fdw/test/routine_skeleton_test.sql"
+docker exec -u opengauss "$CT" bash -c "$ENV; gsql -d postgres -p 5432 -f /tmp/iceberg_fdw/test/catalog_resolve_test.sql"
