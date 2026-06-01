@@ -1,0 +1,60 @@
+-- iceberg_fdw Phase 1 验收实跑输出（openGauss 5.0.0，2026-06-01）
+-- 命令：gsql -d postgres -p 5432 -f test/routine_skeleton_test.sql
+-- 第 4 项的 ERROR 是预期内的非法 OPTION 校验，非失败。
+
+NOTICE:  database "icetest" does not exist, skipping
+DROP DATABASE
+CREATE DATABASE
+You are now connected to database "icetest" as user "opengauss".
+CREATE EXTENSION
+CREATE SERVER
+CREATE FOREIGN TABLE
+=== 1. 行式 count（期望 = 3）===
+ count
+-------
+     3
+(1 row)
+
+=== 1b. 行式取列（期望 3 行，a 非空 int，b 非空 text）===
+ a |  b
+---+------
+ 1 | mock
+ 2 | mock
+ 3 | mock
+(3 rows)
+
+=== 2. EXPLAIN（期望含 Foreign Scan 节点）===
+                 QUERY PLAN
+---------------------------------------------
+ Foreign Scan on ft
+   Iceberg: mock scan (upper-layer skeleton)
+(2 rows)
+
+=== 3. ReScan：相关子查询（期望 3 行，每行 3）===
+ count
+-------
+     3
+     3
+     3
+(3 rows)
+
+=== 4. 非法 OPTION（期望报 invalid option "nope"）===
+ERROR:  invalid option "nope"
+HINT:  Valid options in this context are: namespace, table_name
+=== 5. 向量执行器（期望同样返回 3）===
+SET
+ count
+-------
+     3
+(1 row)
+
+ a |  b
+---+------
+ 1 | mock
+ 2 | mock
+ 3 | mock
+(3 rows)
+
+RESET
+You are now connected to database "postgres" as user "opengauss".
+DROP DATABASE

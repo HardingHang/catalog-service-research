@@ -1,0 +1,6 @@
+# openGauss + g++ 构建/验证镜像（iceberg_fdw 本机验收用）
+FROM opengauss/opengauss:5.0.0
+
+USER root
+# openGauss 扩展为 C++，运行镜像缺 g++；用 openEuler 仓库补装
+RUN dnf install -y gcc-c++ make && dnf clean all
