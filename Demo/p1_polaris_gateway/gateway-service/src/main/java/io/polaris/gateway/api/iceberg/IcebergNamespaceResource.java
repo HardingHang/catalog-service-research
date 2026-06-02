@@ -43,7 +43,7 @@ public class IcebergNamespaceResource {
       return Response.ok(Map.of("namespaces", List.of())).build();
     }
     List<List<String>> result =
-        indexRepository.listNamespaces(indexId).stream()
+        indexRepository.listEffectiveNamespaces(indexId).stream()
             .map(ns -> List.of(ns.split("\\.")))
             .toList();
     return Response.ok(Map.of("namespaces", result)).build();
@@ -63,7 +63,7 @@ public class IcebergNamespaceResource {
           .build();
     }
     String indexId = resolveIndexId(refRecord.get().headCommitId());
-    if (indexId == null || !indexRepository.listNamespaces(indexId).contains(namespace)) {
+    if (indexId == null || !indexRepository.listEffectiveNamespaces(indexId).contains(namespace)) {
       return Response.status(Response.Status.NOT_FOUND)
           .entity(Map.of("error", "namespace not found: " + namespace))
           .build();

@@ -24,6 +24,7 @@ dependencies {
   implementation("io.quarkus:quarkus-micrometer")
   implementation("io.quarkus:quarkus-micrometer-registry-prometheus")
   implementation("io.quarkus:quarkus-opentelemetry")
+  implementation("io.quarkus:quarkus-scheduler")
 
   implementation("org.apache.iceberg:iceberg-api")
   implementation("org.apache.iceberg:iceberg-core")

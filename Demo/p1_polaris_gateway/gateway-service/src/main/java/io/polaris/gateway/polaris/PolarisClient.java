@@ -140,6 +140,105 @@ public class PolarisClient {
     }
   }
 
+  @SuppressWarnings("unchecked")
+  public void materializeTable(
+      String token,
+      String catalogId,
+      String contentKey,
+      String metadataLocation,
+      String metadataSummaryJson) {
+    int dot = contentKey.indexOf('.');
+    if (dot < 0) return;
+    String namespace = contentKey.substring(0, dot);
+    String table = contentKey.substring(dot + 1);
+
+    Map<String, Object> metadata;
+    try {
+      metadata = objectMapper.readValue(metadataSummaryJson, Map.class);
+    } catch (IOException e) {
+      throw new PolarisCallException("Failed to parse metadata JSON for " + contentKey, e);
+    }
+
+    Object rawSnapshotId = metadata.get("current-snapshot-id");
+    if (rawSnapshotId == null) return;
+    long targetSnapshotId = ((Number) rawSnapshotId).longValue();
+    if (targetSnapshotId == -1L) return;
+
+    // Idempotency: skip if Polaris already reflects this snapshot
+    String polarisSnapshotId = getTableSnapshotId(token, catalogId, contentKey);
+    if (String.valueOf(targetSnapshotId).equals(polarisSnapshotId)) return;
+
+    List<Map<String, Object>> snapshots =
+        (List<Map<String, Object>>) metadata.getOrDefault("snapshots", List.of());
+    Map<String, Object> targetSnapshot = null;
+    for (Map<String, Object> snap : snapshots) {
+      Object id = snap.get("snapshot-id");
+      if (id != null && ((Number) id).longValue() == targetSnapshotId) {
+        targetSnapshot = snap;
+        break;
+      }
+    }
+    if (targetSnapshot == null) {
+      throw new PolarisCallException(
+          "Snapshot " + targetSnapshotId + " not found in metadata for " + contentKey);
+    }
+
+    List<Map<String, Object>> updates =
+        List.of(
+            Map.of("action", "add-snapshot", "snapshot", targetSnapshot),
+            Map.of(
+                "action", "set-snapshot-ref",
+                "ref-name", "main",
+                "snapshot-id", targetSnapshotId,
+                "type", "branch"));
+    Map<String, Object> requestBody = Map.of("requirements", List.of(), "updates", updates);
+
+    try {
+      String bodyJson = objectMapper.writeValueAsString(requestBody);
+      HttpRequest request =
+          HttpRequest.newBuilder()
+              .uri(
+                  URI.create(
+                      polarisUrl
+                          + "/api/catalog/v1/"
+                          + catalogId
+                          + "/namespaces/"
+                          + namespace
+                          + "/tables/"
+                          + table))
+              .header("Authorization", "Bearer " + token)
+              .header("Content-Type", "application/json")
+              .POST(HttpRequest.BodyPublishers.ofString(bodyJson))
+              .build();
+      HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() != 200) {
+        throw new PolarisCallException(
+            "Polaris materializeTable failed: " + response.statusCode() + " " + response.body());
+      }
+    } catch (IOException | InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new PolarisCallException("Polaris materializeTable error", e);
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  public String getTableSnapshotId(String token, String catalogId, String contentKey) {
+    int dot = contentKey.indexOf('.');
+    if (dot < 0) return null;
+    String ns = contentKey.substring(0, dot);
+    String table = contentKey.substring(dot + 1);
+    try {
+      Map<String, Object> result = loadTable(token, catalogId, ns, table);
+      Map<String, Object> metadata = (Map<String, Object>) result.getOrDefault("metadata", Map.of());
+      Object id = metadata.get("current-snapshot-id");
+      if (id == null) return null;
+      long val = ((Number) id).longValue();
+      return val == -1L ? null : String.valueOf(val);
+    } catch (PolarisCallException e) {
+      return null;
+    }
+  }
+
   public static class PolarisCallException extends RuntimeException {
     public PolarisCallException(String message) {
       super(message);

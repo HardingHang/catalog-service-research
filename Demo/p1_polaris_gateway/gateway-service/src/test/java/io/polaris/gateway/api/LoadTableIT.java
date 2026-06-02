@@ -123,6 +123,79 @@ class LoadTableIT {
         .body("namespaces[0][0]", is("sales"));
   }
 
+  /**
+   * Regression: after two sequential incremental commits where the second only touches one table,
+   * the untouched table must still be visible via loadTable and listTables on the branch.
+   * Catches the bug where findContent/listByNamespace only looked at the current index level.
+   */
+  @Test
+  void loadTable_unchangedTableVisibleAfterSecondIncrementalCommit() throws SQLException {
+    // Insert two tables in FULL index i0: orders and items
+    String meta = "{\"format-version\":2,\"current-snapshot-id\":-1}";
+    // Use r_ prefix to avoid PK conflicts with baseline data inserted by @BeforeEach
+    try (Connection conn = dataSource.getConnection()) {
+      exec(conn,
+          "INSERT INTO catalog_content_values(value_id,catalog_id,content_id,content_key,"
+              + "content_type,metadata_location,table_uuid,metadata_summary_json) VALUES"
+              + "('r_vord0','test','r_cid_ord','sales.orders','ICEBERG_TABLE','s3://r/ord0','ru1',?::jsonb),"
+              + "('r_vitm0','test','r_cid_itm','sales.items','ICEBERG_TABLE','s3://r/itm0','ru2',?::jsonb),"
+              + "('r_vord1','test','r_cid_ord','sales.orders','ICEBERG_TABLE','s3://r/ord1','ru1',?::jsonb),"
+              + "('r_vord2','test','r_cid_ord','sales.orders','ICEBERG_TABLE','s3://r/ord2','ru1',?::jsonb)",
+          meta, meta, meta, meta);
+
+      exec(conn,
+          "INSERT INTO catalog_commits(commit_id,catalog_id,author,operation_summary,index_id,source_ref)"
+              + " VALUES('r_c0','test','gw','{}','r_i0','main')");
+
+      exec(conn,
+          "INSERT INTO catalog_commits(commit_id,catalog_id,parent_commit_id,author,operation_summary,index_id,source_ref)"
+              + " VALUES('r_c1','test','r_c0','gw','{}','r_i1','dev_a'),"
+              + "('r_c2','test','r_c1','gw','{}','r_i2','dev_a')");
+
+      exec(conn,
+          "INSERT INTO catalog_ref_indexes(index_id,catalog_id,commit_id,index_kind,object_count,stripe_count)"
+              + " VALUES('r_i0','test','r_c0','FULL',2,1)");
+
+      exec(conn,
+          "INSERT INTO catalog_ref_indexes(index_id,catalog_id,commit_id,parent_index_id,index_kind,object_count,stripe_count)"
+              + " VALUES('r_i1','test','r_c1','r_i0','INCREMENTAL',1,1),"
+              + "('r_i2','test','r_c2','r_i1','INCREMENTAL',1,1)");
+
+      exec(conn,
+          "INSERT INTO catalog_content_index(index_id,namespace,content_key,content_id,value_id,content_type)"
+              + " VALUES"
+              + "('r_i0','sales','sales.orders','r_cid_ord','r_vord0','ICEBERG_TABLE'),"
+              + "('r_i0','sales','sales.items','r_cid_itm','r_vitm0','ICEBERG_TABLE'),"
+              // c1: only orders updated
+              + "('r_i1','sales','sales.orders','r_cid_ord','r_vord1','ICEBERG_TABLE'),"
+              // c2: only orders updated again; items not in r_i2
+              + "('r_i2','sales','sales.orders','r_cid_ord','r_vord2','ICEBERG_TABLE')");
+
+      exec(conn,
+          "INSERT INTO catalog_refs(catalog_id,ref_name,ref_type,head_commit_id,deleted,created_by)"
+              + " VALUES('test','dev_a','BRANCH','r_c2',false,'test')");
+    }
+
+    // items is only in r_i0; the branch is at r_i2 (r_i2→r_i1→r_i0 chain)
+    // Without chain-walking, loadTable would return 404
+    given()
+        .header("X-Catalog-Ref", "dev_a")
+        .when()
+        .get("/iceberg/v1/" + CATALOG + "/namespaces/sales/tables/items")
+        .then()
+        .statusCode(200)
+        .body("metadata-location", is("s3://r/itm0"));
+
+    // listTables must also include items
+    given()
+        .header("X-Catalog-Ref", "dev_a")
+        .when()
+        .get("/iceberg/v1/" + CATALOG + "/namespaces/sales/tables")
+        .then()
+        .statusCode(200)
+        .body("identifiers.name", org.hamcrest.Matchers.hasItems("orders", "items"));
+  }
+
   private void insertTestData() throws SQLException {
     String metadataJson =
         """

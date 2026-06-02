@@ -96,7 +96,7 @@ public class CommitService {
     String contentKey = request.namespace() + "." + request.table();
     ContentIndexRecord indexEntry =
         indexRepository
-            .findContent(currentIndexId, contentKey)
+            .findEffectiveContent(currentIndexId, contentKey)
             .orElseThrow(() -> new NoSuchTableException(contentKey));
     ContentValueRecord current =
         contentValueRepository
@@ -192,7 +192,7 @@ public class CommitService {
             false));
 
     // 11. Insert commit op
-    insertCommitOp(newCommitId, contentKey, current.valueId(), newValueId);
+    insertCommitOp(newCommitId, 0, contentKey, current.valueId(), newValueId);
 
     // 12. CAS: update ref head — if 0 rows, another commit won the race
     int rows =
@@ -315,7 +315,7 @@ public class CommitService {
   }
 
   private void insertCommitOp(
-      String commitId, String contentKey, String expectedValueId, String newValueId) {
+      String commitId, int ordinal, String contentKey, String expectedValueId, String newValueId) {
     try (Connection conn = dataSource.getConnection()) {
       DSLContext ctx = DSL.using(conn, SQLDialect.POSTGRES);
       ctx.insertInto(table("catalog_commit_ops"))
@@ -326,11 +326,201 @@ public class CommitService {
               field("op_type"),
               field("expected_value_id"),
               field("new_value_id"))
-          .values(commitId, 0, contentKey, "PUT", expectedValueId, newValueId)
+          .values(commitId, ordinal, contentKey, "PUT", expectedValueId, newValueId)
           .execute();
     } catch (SQLException e) {
       throw new IllegalStateException("CommitOp insert failed", e);
     }
+  }
+
+  public record TableChange(
+      String namespace,
+      String table,
+      List<Map<String, Object>> requirements,
+      List<Map<String, Object>> updates) {}
+
+  public record MultiTableCommitRequest(
+      String catalogId,
+      String ref,
+      String idempotencyKey,
+      String requestId,
+      List<TableChange> tableChanges) {}
+
+  public record MultiTableCommitResult(String commitId) {}
+
+  private record TableChangeResult(
+      String contentKey,
+      String namespace,
+      ContentValueRecord current,
+      String newValueId) {}
+
+  @Transactional
+  public MultiTableCommitResult multiTableCommit(MultiTableCommitRequest request) {
+    // 1. Idempotency check
+    if (request.idempotencyKey() != null) {
+      Optional<String> cached = findCompletedIdempotency(request.idempotencyKey());
+      if (cached.isPresent()) {
+        try {
+          return objectMapper.readValue(cached.get(), MultiTableCommitResult.class);
+        } catch (JsonProcessingException e) {
+          throw new IllegalStateException("Failed to parse cached idempotency response", e);
+        }
+      }
+    }
+
+    // 2. Resolve ref state
+    RefRecord ref =
+        refRepository
+            .getRef(request.catalogId(), request.ref())
+            .filter(r -> !r.deleted())
+            .orElseThrow(() -> new RefNotFoundException("ref not found: " + request.ref()));
+    String expectedHead = ref.headCommitId();
+    if (expectedHead == null) {
+      throw new CommitConflictException("ref has no head commit: " + request.ref());
+    }
+
+    // 3. Resolve current index
+    String currentIndexId =
+        commitRepository
+            .findById(expectedHead)
+            .map(CommitRecord::indexId)
+            .orElseThrow(() -> new IllegalStateException("commit not found: " + expectedHead));
+
+    // 4. For each table: validate, apply updates, write metadata
+    String newCommitId = "c-" + UUID.randomUUID();
+    String newIndexId = "i-" + UUID.randomUUID();
+
+    List<TableChangeResult> results = new ArrayList<>();
+    for (TableChange change : request.tableChanges()) {
+      String contentKey = change.namespace() + "." + change.table();
+      ContentIndexRecord indexEntry =
+          indexRepository
+              .findEffectiveContent(currentIndexId, contentKey)
+              .orElseThrow(() -> new NoSuchTableException(contentKey));
+      ContentValueRecord current =
+          contentValueRepository
+              .findByValueId(indexEntry.valueId())
+              .orElseThrow(() -> new NoSuchTableException(contentKey));
+
+      requirementsValidator.validate(change.requirements(), current);
+
+      Map<String, Object> updatedMeta;
+      try {
+        updatedMeta =
+            applyUpdates(
+                objectMapper.readValue(current.metadataSummaryJson(), new TypeReference<>() {}),
+                change.updates());
+      } catch (JsonProcessingException e) {
+        throw new IllegalStateException("Failed to parse metadata JSON for " + contentKey, e);
+      }
+
+      String updatedMetaJson;
+      try {
+        updatedMetaJson = objectMapper.writeValueAsString(updatedMeta);
+      } catch (JsonProcessingException e) {
+        throw new IllegalStateException("Failed to serialize updated metadata for " + contentKey, e);
+      }
+
+      String tableLocation = current.tableLocation() != null ? current.tableLocation() : "";
+      String newMetadataLocation = metadataWriter.write(updatedMetaJson, tableLocation);
+
+      String newValueId = "v-" + UUID.randomUUID();
+      String newSnapshotId = extractCurrentSnapshotId(updatedMeta);
+      contentValueRepository.insert(
+          new ContentValueRecord(
+              newValueId,
+              current.catalogId(),
+              current.contentId(),
+              contentKey,
+              current.contentType(),
+              newMetadataLocation,
+              newSnapshotId,
+              current.schemaId(),
+              current.specId(),
+              current.sortOrderId(),
+              current.tableUuid(),
+              current.tableLocation(),
+              current.formatVersion(),
+              current.lastSequenceNumber(),
+              null,
+              updatedMetaJson));
+
+      results.add(new TableChangeResult(contentKey, change.namespace(), current, newValueId));
+    }
+
+    // 5. One commit record
+    commitRepository.insertCommit(
+        new CommitRecord(
+            newCommitId,
+            request.catalogId(),
+            expectedHead,
+            "gateway",
+            "multi-table commit (" + results.size() + " tables)",
+            null,
+            "{}",
+            newIndexId,
+            request.ref(),
+            request.requestId()));
+
+    // 6. One incremental index + N content index entries
+    indexRepository.insertIndex(
+        new IndexRecord(
+            newIndexId,
+            request.catalogId(),
+            newCommitId,
+            currentIndexId,
+            IndexKind.INCREMENTAL,
+            results.size(),
+            1,
+            null));
+    for (TableChangeResult r : results) {
+      indexRepository.insertContentIndex(
+          new ContentIndexRecord(
+              newIndexId,
+              r.namespace(),
+              r.contentKey(),
+              r.current().contentId(),
+              r.newValueId(),
+              r.current().contentType(),
+              false));
+    }
+
+    // 7. N commit ops
+    for (int i = 0; i < results.size(); i++) {
+      TableChangeResult r = results.get(i);
+      insertCommitOp(newCommitId, i, r.contentKey(), r.current().valueId(), r.newValueId());
+    }
+
+    // 8. CAS
+    int rows =
+        refRepository.casUpdateHead(
+            request.catalogId(), request.ref(), expectedHead, newCommitId);
+    if (rows == 0) {
+      throw new CommitConflictException("Concurrent modification on ref: " + request.ref());
+    }
+
+    // 9. Audit
+    auditService.record(
+        UUID.randomUUID().toString(),
+        request.catalogId(),
+        request.ref(),
+        "gateway",
+        "TABLE_COMMIT",
+        newCommitId,
+        request.requestId(),
+        "{}");
+
+    // 10. Idempotency
+    MultiTableCommitResult result = new MultiTableCommitResult(newCommitId);
+    if (request.idempotencyKey() != null) {
+      try {
+        insertIdempotency(request.idempotencyKey(), objectMapper.writeValueAsString(result));
+      } catch (JsonProcessingException e) {
+        throw new IllegalStateException("Failed to serialize idempotency result", e);
+      }
+    }
+
+    return result;
   }
 
   public static class CommitConflictException extends RuntimeException {

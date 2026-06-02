@@ -9,8 +9,11 @@ import jakarta.inject.Inject;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 import javax.sql.DataSource;
 import org.jooq.DSLContext;
 import org.jooq.SQLDialect;
@@ -169,6 +172,86 @@ public class IndexRepository {
                             record.value5(),
                             record.value6(),
                             Boolean.TRUE.equals(record.value7()))));
+  }
+
+  public List<ContentIndexRecord> listAllContentAtIndex(String indexId) {
+    return withDsl(
+        ctx ->
+            ctx.select(
+                    field("index_id", String.class),
+                    field("namespace", String.class),
+                    field("content_key", String.class),
+                    field("content_id", String.class),
+                    field("value_id", String.class),
+                    field("content_type", String.class),
+                    field("deleted", Boolean.class))
+                .from(table("catalog_content_index"))
+                .where(field("index_id").eq(indexId))
+                .fetch(
+                    record ->
+                        new ContentIndexRecord(
+                            record.value1(),
+                            record.value2(),
+                            record.value3(),
+                            record.value4(),
+                            record.value5(),
+                            record.value6(),
+                            Boolean.TRUE.equals(record.value7()))));
+  }
+
+  /**
+   * Walks the incremental index chain from {@code indexId} up to the FULL root, returning the
+   * effective (non-deleted) content map keyed by content_key. Entries from newer indexes take
+   * precedence over parent indexes.
+   */
+  public Map<String, ContentIndexRecord> resolveAllContent(String indexId) {
+    Map<String, ContentIndexRecord> byKey = new LinkedHashMap<>();
+    String cursor = indexId;
+    while (cursor != null) {
+      Optional<IndexRecord> idx = findById(cursor);
+      if (idx.isEmpty()) break;
+      for (ContentIndexRecord r : listAllContentAtIndex(cursor)) {
+        byKey.putIfAbsent(r.contentKey(), r);
+      }
+      cursor = idx.get().parentIndexId();
+    }
+    byKey.values().removeIf(ContentIndexRecord::deleted);
+    return byKey;
+  }
+
+  /**
+   * Walks the index chain from {@code indexId} toward the FULL root, returning the first
+   * non-deleted entry for {@code contentKey}. An explicit deleted=true entry stops the search.
+   */
+  public Optional<ContentIndexRecord> findEffectiveContent(String indexId, String contentKey) {
+    String cursor = indexId;
+    while (cursor != null) {
+      Optional<ContentIndexRecord> found = findContent(cursor, contentKey);
+      if (found.isPresent()) {
+        return found.get().deleted() ? Optional.empty() : found;
+      }
+      Optional<IndexRecord> idx = findById(cursor);
+      if (idx.isEmpty()) break;
+      cursor = idx.get().parentIndexId();
+    }
+    return Optional.empty();
+  }
+
+  /** Returns the effective (non-deleted) content entries visible at {@code indexId} for the given namespace. */
+  public List<ContentIndexRecord> listEffectiveByNamespace(String indexId, String namespace) {
+    return resolveAllContent(indexId).values().stream()
+        .filter(r -> namespace.equals(r.namespace()))
+        .toList();
+  }
+
+  /** Returns distinct namespaces visible at {@code indexId} across the full index chain. */
+  public List<String> listEffectiveNamespaces(String indexId) {
+    return resolveAllContent(indexId).values().stream()
+        .map(ContentIndexRecord::namespace)
+        .collect(Collectors.toCollection(java.util.LinkedHashSet::new))
+        .stream()
+        .sorted()
+        .toList();
   }
 
   public boolean shouldCompact(String catalogId, String refName) {

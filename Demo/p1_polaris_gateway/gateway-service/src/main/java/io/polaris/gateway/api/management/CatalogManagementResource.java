@@ -2,6 +2,8 @@ package io.polaris.gateway.api.management;
 
 import io.polaris.gateway.polaris.BootstrapService;
 import io.polaris.gateway.polaris.BootstrapService.AlreadyBootstrappedException;
+import io.polaris.gateway.polaris.DriftChecker;
+import io.polaris.gateway.polaris.DriftChecker.DriftReport;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.GET;
@@ -18,6 +20,7 @@ import java.util.Map;
 public class CatalogManagementResource {
 
   @Inject BootstrapService bootstrapService;
+  @Inject DriftChecker driftChecker;
 
   @POST
   @Path("/bootstrap")
@@ -35,11 +38,8 @@ public class CatalogManagementResource {
   @GET
   @Path("/drift-report")
   public Response driftReport(@PathParam("catalog") String catalog) {
-    return Response.status(Response.Status.NOT_IMPLEMENTED)
-        .entity(
-            Map.of(
-                "code", "PHASE_1_PLACEHOLDER", "operation", "driftReport", "catalog", catalog))
-        .build();
+    DriftReport report = driftChecker.checkDrift(catalog, "main");
+    return Response.ok(Map.of("ref", report.ref(), "items", report.items())).build();
   }
 
   @POST

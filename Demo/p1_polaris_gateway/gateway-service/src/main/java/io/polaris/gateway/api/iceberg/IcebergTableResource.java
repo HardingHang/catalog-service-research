@@ -62,7 +62,7 @@ public class IcebergTableResource {
       return Response.ok(Map.of("identifiers", List.of())).build();
     }
     List<Map<String, Object>> identifiers =
-        indexRepository.listByNamespace(indexId, namespace).stream()
+        indexRepository.listEffectiveByNamespace(indexId, namespace).stream()
             .map(
                 e -> {
                   String key = e.contentKey();
@@ -103,7 +103,7 @@ public class IcebergTableResource {
           .build();
     }
     String contentKey = namespace + "." + table;
-    var contentIndex = indexRepository.findContent(indexId, contentKey);
+    var contentIndex = indexRepository.findEffectiveContent(indexId, contentKey);
     if (contentIndex.isEmpty()) {
       return Response.status(Response.Status.NOT_FOUND)
           .entity(Map.of("error", "table not found: " + contentKey))
